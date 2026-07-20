@@ -1,8 +1,11 @@
 import Link from "next/link";
 import { AppShell } from "@/components/web/AppShell";
 import { FireIcon } from "@/components/web/Icons";
+import { getActiveDebates, getDebateStats } from "@/app/debate/new/actions";
 
-export default function Dashboard() {
+export default async function Dashboard() {
+  const [debates, stats] = await Promise.all([getActiveDebates(), getDebateStats()]);
+
   return (
     <AppShell>
       <div className="eyebrow">
@@ -11,7 +14,12 @@ export default function Dashboard() {
       <h1 className="page-title">READY TO RUN THE ROOM?</h1>
 
       <div className="stat-grid">
-        {[["0", "Pitch points"], ["0 - 0", "Win / loss"], ["0%", "Win rate"], ["—", "Rank"]].map(([a, b]) => (
+        {[
+          [String(stats.points), "Pitch points"],
+          [`${stats.wins} - ${stats.losses}`, "Win / loss"],
+          [`${stats.winRate}%`, "Win rate"],
+          ["—", "Rank"],
+        ].map(([a, b]) => (
           <div className="card stat" key={b}><small>{b}</small><b>{a}</b></div>
         ))}
       </div>
@@ -26,12 +34,24 @@ export default function Dashboard() {
             <Link href="/debate/new" className="button">New debate</Link>
           </div>
           <div className="list">
-            <div className="empty-state">
-              <p>No active debates yet.</p>
-              <Link href="/debate/new" className="button" style={{ marginTop: 12, display: "inline-flex" }}>
-                Start your first debate
-              </Link>
-            </div>
+            {debates.length === 0 ? (
+              <div className="empty-state">
+                <p>No active debates yet.</p>
+                <Link href="/debate/new" className="button" style={{ marginTop: 12, display: "inline-flex" }}>
+                  Start your first debate
+                </Link>
+              </div>
+            ) : (
+              debates.map((d) => (
+                <Link href={`/debate/${d.id}`} key={d.id} className="debate-row" style={{ textDecoration: "none" }}>
+                  <div>
+                    <strong>{d.topic}</strong>
+                    <p>{d.category} &middot; {d.status === "pending" ? "Waiting for opponent" : `vs ${d.opponent_name || "TBD"}`}</p>
+                  </div>
+                  <span className="tag">{d.status}</span>
+                </Link>
+              ))
+            )}
           </div>
         </section>
 
@@ -41,7 +61,7 @@ export default function Dashboard() {
             0 DAYS <FireIcon size={24} color="var(--muted)" />
           </h2>
           <p style={{ color: "var(--muted)", lineHeight: 1.6 }}>
-            Debate once to start your streak and earn a 1.5× point boost.
+            Debate once to start your streak and earn a 1.5x point boost.
           </p>
           <div style={{ display: "flex", gap: 7, marginTop: 24 }}>
             {["M", "T", "W", "T", "F", "S", "S"].map((x, i) => (

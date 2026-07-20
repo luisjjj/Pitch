@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import { AppShell } from "@/components/web/AppShell";
+import { createDebate } from "./actions";
 import {
   FireIcon, BuildingIcon, ClapperIcon, BallIcon, BulbIcon, GlobeIcon,
   BrainIcon, AtomIcon, ForkKnifeIcon, MusicIcon, HourglassIcon, SpeechIcon,
@@ -326,7 +327,10 @@ export default function NewDebate() {
           <button
             className="button"
             disabled={!topic}
-            onClick={() => router.push("/debate/matching")}
+            onClick={async () => {
+              const id = await createDebate({ topic, category: cat, format, side });
+              router.push(`/debate/${id}`);
+            }}
           >
             Find opponent
           </button>

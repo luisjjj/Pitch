@@ -1,22 +1,51 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter, useParams } from "next/navigation";
 import { Send } from "lucide-react";
 import { AppShell } from "@/components/web/AppShell";
 
+interface Debate {
+  id: string;
+  topic: string;
+  category: string;
+  format: string;
+  status: string;
+  created_by: string;
+  opponent_id: string | null;
+  opponent_name: string | null;
+}
+
 export default function DebateRoom() {
   const [text, setText] = useState("");
+  const [debate, setDebate] = useState<Debate | null>(null);
+  const [loading, setLoading] = useState(true);
   const r = useRouter();
   const params = useParams();
   const debateId = params.id as string;
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const res = await fetch(`/api/debates/${debateId}`);
+        if (res.ok) {
+          setDebate(await res.json());
+        }
+      } catch {
+        // debate not found, show fallback
+      } finally {
+        setLoading(false);
+      }
+    }
+    load();
+  }, [debateId]);
 
   return (
     <AppShell>
       <div className="topic-bar">
         <div>
           <div className="eyebrow">Round 1 of 3</div>
-          <strong>Debate #{debateId}</strong>
+          <strong>{debate?.topic || `Debate #${debateId}`}</strong>
         </div>
         <div className="timer">03:00</div>
       </div>
@@ -28,7 +57,7 @@ export default function DebateRoom() {
               <div className="avatar">Y</div>
               <div>
                 <strong>You</strong>
-                <div className="eyebrow">FOR · YOUR TURN</div>
+                <div className="eyebrow">FOR &middot; YOUR TURN</div>
               </div>
             </div>
             <span className="tag">ACTIVE</span>
@@ -43,12 +72,12 @@ export default function DebateRoom() {
             <div style={{ display: "flex", gap: 11, alignItems: "center" }}>
               <div className="avatar" style={{ background: "linear-gradient(135deg,#4768aa,#132142)" }}>?</div>
               <div>
-                <strong>Opponent</strong>
-                <div className="eyebrow">AGAINST · WAITING</div>
+                <strong>{debate?.opponent_name || "Opponent"}</strong>
+                <div className="eyebrow">AGAINST &middot; WAITING</div>
               </div>
             </div>
           </div>
-          <div className="argument">Waiting for opponent to join…</div>
+          <div className="argument">Waiting for opponent to join&hellip;</div>
         </article>
       </div>
 
