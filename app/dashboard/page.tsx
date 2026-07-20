@@ -51,7 +51,7 @@ export default async function Dashboard() {
     };
 
     const userResult = await pool.query(
-      `SELECT xp, rank, current_streak FROM users WHERE id = $1`,
+      `SELECT xp, rank, current_streak FROM "user" WHERE id = $1`,
       [session.user.id]
     );
     if (userResult.rows.length > 0) {

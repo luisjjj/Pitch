@@ -47,7 +47,7 @@ export async function awardXP(
   );
 
   await pool.query(
-    `UPDATE users SET xp = xp + $1 WHERE id = $2`,
+    `UPDATE "user" SET xp = xp + $1 WHERE id = $2`,
     [xp, userId]
   );
 }
@@ -59,8 +59,8 @@ export async function checkAndAwardAchievements(userId: string): Promise<string[
       (SELECT COUNT(*) FROM debates WHERE created_by = $1 AND status = 'completed') as total_debates,
       (SELECT COUNT(*) FROM debates WHERE created_by = $1 AND status = 'completed' AND winner_id = $1) as wins,
       (SELECT COUNT(*) FROM debates WHERE created_by = $1 AND status = 'completed' AND winner_id != $1) as losses,
-      (SELECT best_streak FROM users WHERE id = $1) as best_streak,
-      (SELECT current_streak FROM users WHERE id = $1) as current_streak`,
+      (SELECT best_streak FROM "user" WHERE id = $1) as best_streak,
+      (SELECT current_streak FROM "user" WHERE id = $1) as current_streak`,
     [userId]
   );
 
@@ -116,7 +116,7 @@ export async function checkAndAwardAchievements(userId: string): Promise<string[
 export async function updateStreak(userId: string, won: boolean): Promise<void> {
   if (won) {
     await pool.query(
-      `UPDATE users SET
+      `UPDATE "user" SET
         current_streak = current_streak + 1,
         best_streak = GREATEST(best_streak, current_streak + 1)
        WHERE id = $1`,
@@ -124,7 +124,7 @@ export async function updateStreak(userId: string, won: boolean): Promise<void> 
     );
   } else {
     await pool.query(
-      `UPDATE users SET current_streak = 0 WHERE id = $1`,
+      `UPDATE "user" SET current_streak = 0 WHERE id = $1`,
       [userId]
     );
   }

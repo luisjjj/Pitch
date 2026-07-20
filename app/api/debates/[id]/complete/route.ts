@@ -72,7 +72,7 @@ export async function POST(
   const newAchievements = await checkAndAwardAchievements(session.user.id);
 
   // Update user rank based on total XP
-  const xpResult = await pool.query(`SELECT xp FROM users WHERE id = $1`, [session.user.id]);
+  const xpResult = await pool.query(`SELECT xp FROM "user" WHERE id = $1`, [session.user.id]);
   const totalXP = xpResult.rows[0]?.xp || 0;
 
   let rank = "Bronze";
@@ -81,7 +81,7 @@ export async function POST(
   else if (totalXP >= 1500) rank = "Gold";
   else if (totalXP >= 500) rank = "Silver";
 
-  await pool.query(`UPDATE users SET rank = $1 WHERE id = $2`, [rank, session.user.id]);
+  await pool.query(`UPDATE "user" SET rank = $1 WHERE id = $2`, [rank, session.user.id]);
 
   return NextResponse.json({
     won,
