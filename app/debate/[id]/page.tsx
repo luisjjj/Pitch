@@ -33,6 +33,8 @@ export default function DebateRoom() {
   const [aiThinking, setAiThinking] = useState(false);
   const [aiResponse, setAiResponse] = useState<string | null>(null);
   const [round, setRound] = useState(1);
+  const [completed, setCompleted] = useState(false);
+  const [resultData, setResultData] = useState<any>(null);
   const r = useRouter();
   const params = useParams();
   const debateId = params.id as string;
@@ -82,6 +84,19 @@ export default function DebateRoom() {
       return "";
     }
   }, []);
+
+  const completeDebate = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/debates/${debateId}/complete`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        setResultData(data);
+        setCompleted(true);
+      }
+    } catch (err) {
+      console.error("Failed to complete debate:", err);
+    }
+  }, [debateId]);
 
   const generateAIResponse = useCallback(async (userArgument: string) => {
     if (!debate || !persona) return;
@@ -310,7 +325,33 @@ export default function DebateRoom() {
                 ? "Waiting for AI response..."
                 : "Waiting for opponent..."}
           </p>
-          {aiResponse && (
+          {completed && resultData ? (
+            <div style={{ marginTop: 24, padding: "20px 24px", background: "#0c0d10", borderRadius: 16, textAlign: "center" }}>
+              <div className="eyebrow" style={{ marginBottom: 8 }}>
+                {resultData.won ? "VICTORY" : "DEFEAT"}
+              </div>
+              <div style={{ font: "700 32px var(--font-display)", color: resultData.won ? "var(--gold)" : "var(--muted)", marginBottom: 8 }}>
+                +{resultData.xp} XP
+              </div>
+              <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 8 }}>
+                Rank: <strong style={{ color: "var(--gold)" }}>{resultData.rank}</strong>
+              </div>
+              {resultData.newAchievements?.length > 0 && (
+                <div style={{ marginTop: 12, padding: "10px 16px", background: "rgba(255,215,0,0.07)", borderRadius: 12, border: "1px solid rgba(255,215,0,0.2)" }}>
+                  <span style={{ fontSize: 13, color: "var(--gold)" }}>
+                    New achievements: {resultData.newAchievements.join(", ")}
+                  </span>
+                </div>
+              )}
+              <button
+                className="button"
+                style={{ marginTop: 16 }}
+                onClick={() => r.push(`/debate/${debateId}/results`)}
+              >
+                See full results
+              </button>
+            </div>
+          ) : aiResponse ? (
             <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 20 }}>
               {round < 3 ? (
                 <button
@@ -326,12 +367,12 @@ export default function DebateRoom() {
                   Next round &rarr;
                 </button>
               ) : (
-                <button className="button" onClick={() => r.push(`/debate/${debateId}/results`)}>
-                  See results
+                <button className="button" onClick={completeDebate} disabled={completed}>
+                  {completed ? "Completed!" : "End debate & see results"}
                 </button>
               )}
             </div>
-          )}
+          ) : null}
         </section>
       )}
     </AppShell>
