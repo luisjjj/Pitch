@@ -209,14 +209,12 @@ export default function Friends() {
         <>
           {/* Location status */}
           <div style={{
-            padding: "10px 14px", borderRadius: 12, marginBottom: 16,
-            background: myLocation ? "rgba(111,209,140,0.08)" : "rgba(255,255,255,0.03)",
-            border: `1px solid ${myLocation ? "rgba(111,209,140,0.2)" : "var(--line)"}`,
-            display: "flex", alignItems: "center", gap: 8, fontSize: 13,
+            marginBottom: 16,
+            display: "flex", alignItems: "center", gap: 6, fontSize: 12,
           }}>
-            <MapPin size={14} style={{ color: myLocation ? "var(--green)" : "var(--muted)" }} />
+            <MapPin size={13} style={{ color: myLocation ? "var(--green)" : "var(--muted)" }} />
             {myLocation ? (
-              <span style={{ color: "var(--green)", fontWeight: 700 }}>Location active — showing nearby users</span>
+              <span style={{ color: "var(--muted)", fontWeight: 700 }}>Location active — showing nearby users</span>
             ) : (
               <span style={{ color: "var(--muted)" }}>
                 Enable location to find nearby debaters, or search by name
@@ -250,7 +248,7 @@ export default function Friends() {
               <p style={{ marginTop: 8 }}>Searching...</p>
             </div>
           ) : nearbyUsers.length === 0 ? (
-            <div className="card" style={{ padding: 32, textAlign: "center" }}>
+            <div style={{ padding: 32, textAlign: "center" }}>
               <p style={{ color: "var(--muted)" }}>
                 {searchQuery ? "No users found matching your search." : "No other users yet. Be the first to invite someone!"}
               </p>
@@ -260,10 +258,10 @@ export default function Friends() {
               {nearbyUsers.map((user) => (
                 <div
                   key={user.id}
-                  className="card"
                   style={{
-                    padding: "12px 16px",
+                    padding: "12px 0",
                     display: "flex", alignItems: "center", gap: 12,
+                    borderBottom: "1px solid var(--line)",
                   }}
                 >
                   <div style={{
@@ -336,13 +334,13 @@ export default function Friends() {
               {requestTab === "incoming" && (
                 <>
                   {incomingRequests.length === 0 ? (
-                    <div className="card" style={{ padding: 32, textAlign: "center" }}>
+                    <div style={{ padding: 32, textAlign: "center" }}>
                       <p style={{ color: "var(--muted)" }}>No incoming challenges yet.</p>
                     </div>
                   ) : (
                     <div style={{ display: "grid", gap: 8 }}>
                       {incomingRequests.map((req) => (
-                        <div key={req.id} className="card" style={{ padding: "14px 18px" }}>
+                        <div key={req.id} style={{ padding: "14px 0", borderBottom: "1px solid var(--line)" }}>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
                             <div>
                               <div style={{ fontWeight: 800, fontSize: 14 }}>{req.from_user_name || "Someone"}</div>
@@ -396,13 +394,13 @@ export default function Friends() {
               {requestTab === "outgoing" && (
                 <>
                   {outgoingRequests.length === 0 ? (
-                    <div className="card" style={{ padding: 32, textAlign: "center" }}>
+                    <div style={{ padding: 32, textAlign: "center" }}>
                       <p style={{ color: "var(--muted)" }}>No outgoing challenges. Find opponents to challenge!</p>
                     </div>
                   ) : (
                     <div style={{ display: "grid", gap: 8 }}>
                       {outgoingRequests.map((req) => (
-                        <div key={req.id} className="card" style={{ padding: "12px 16px" }}>
+                        <div key={req.id} style={{ padding: "12px 0", borderBottom: "1px solid var(--line)" }}>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                             <div>
                               <div style={{ fontWeight: 800, fontSize: 13 }}>&ldquo;{req.topic}&rdquo;</div>
