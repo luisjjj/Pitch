@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import { AppShell } from "@/components/web/AppShell";
 import { createDebate } from "./actions";
+import { personas, getDifficultyLabel, getDifficultyColor, type Persona } from "@/lib/personas";
 import {
   FireIcon, BuildingIcon, ClapperIcon, BallIcon, BulbIcon, GlobeIcon,
   BrainIcon, AtomIcon, ForkKnifeIcon, MusicIcon, HourglassIcon, SpeechIcon,
@@ -120,7 +121,6 @@ const topics: Record<string, string[]> = {
     "The offside rule ruins football and should be abolished.",
     "Team sports teach conformity more than collaboration.",
     "The toughest endurance event is the one nobody's heard of.",
-    "体育精神 is dead and professionalism killed it.",
     "Boxing is just assault with a referee.",
     "The greatest trick in sport is making it look easy.",
     "Athletic peak age is completely arbitrary and mostly wrong.",
@@ -172,7 +172,6 @@ const topics: Record<string, string[]> = {
     "Microwave food is just as valid as oven food.",
     "The concept of a 'guilty pleasure' in food is elitist.",
     "Instant noodles are the greatest invention of the 20th century.",
-    "Cats are better pets than dogs.",
     "The best meals are the ones you didn't plan.",
   ],
   Music: [
@@ -227,32 +226,284 @@ const topics: Record<string, string[]> = {
   ],
 };
 
+type Step = "category" | "opponent" | "persona" | "configure";
+
 export default function NewDebate() {
+  const [step, setStep] = useState<Step>("category");
   const [cat, setCat] = useState("Philosophy");
   const [topic, setTopic] = useState("");
   const [format, setFormat] = useState("Text");
   const [side, setSide] = useState("For");
   const [showPicker, setShowPicker] = useState(false);
+  const [selectedPersona, setSelectedPersona] = useState<Persona | null>(null);
+  const [opponentType, setOpponentType] = useState<"ai" | "human">("ai");
+  const [selectedTier, setSelectedTier] = useState<"easy" | "medium" | "hard" | null>(null);
   const router = useRouter();
+
+  const filteredPersonas = selectedTier
+    ? personas.filter((p) => p.tier === selectedTier)
+    : personas;
+
+  function handleCategoryPick(name: string) {
+    setCat(name);
+    setShowPicker(true);
+  }
+
+  function handleTopicPick(t: string) {
+    setTopic(t);
+    setShowPicker(false);
+  }
+
+  function handleOpponentPick(type: "ai" | "human") {
+    setOpponentType(type);
+    if (type === "ai") {
+      setStep("persona");
+    } else {
+      setStep("configure");
+    }
+  }
+
+  function handlePersonaPick(p: Persona) {
+    setSelectedPersona(p);
+    setStep("configure");
+  }
+
+  async function handleStart() {
+    const id = await createDebate({
+      topic,
+      category: cat,
+      format,
+      side,
+      personaId: selectedPersona?.id,
+    });
+    router.push(`/debate/${id}`);
+  }
 
   return (
     <AppShell>
-      <div className="eyebrow">Start a new showdown</div>
-      <h1 className="page-title">PICK YOUR BATTLEFIELD</h1>
-      <div className="picker-grid picker-grid-wide">
-        {cats.map(([icon, name, desc]) => (
-          <button
-            key={name}
-            onClick={() => { setCat(name); setShowPicker(true); }}
-            className={`card choice ${cat === name ? "selected" : ""}`}
-          >
-            <span className="category-icon">{icon}</span>
-            <strong>{name}</strong>
-            <p>{desc}</p>
-          </button>
-        ))}
+      {/* Breadcrumb */}
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 16, fontSize: 13, color: "var(--muted)", fontWeight: 800 }}>
+        <span style={{ color: step === "category" ? "var(--red-light)" : undefined, cursor: "pointer" }} onClick={() => setStep("category")}>Category</span>
+        <span>&rsaquo;</span>
+        <span style={{ color: step === "opponent" ? "var(--red-light)" : undefined, cursor: "pointer" }} onClick={() => topic && setStep("opponent")}>Opponent</span>
+        <span>&rsaquo;</span>
+        <span style={{ color: step === "persona" ? "var(--red-light)" : undefined }}>Persona</span>
+        <span>&rsaquo;</span>
+        <span style={{ color: step === "configure" ? "var(--red-light)" : undefined }}>Configure</span>
       </div>
 
+      {/* STEP: Category + Topic */}
+      {step === "category" && (
+        <>
+          <div className="eyebrow">Start a new showdown</div>
+          <h1 className="page-title">PICK YOUR BATTLEFIELD</h1>
+          <div className="picker-grid picker-grid-wide">
+            {cats.map(([icon, name, desc]) => (
+              <button
+                key={name}
+                onClick={() => handleCategoryPick(name)}
+                className={`card choice ${cat === name ? "selected" : ""}`}
+              >
+                <span className="category-icon">{icon}</span>
+                <strong>{name}</strong>
+                <p>{desc}</p>
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* STEP: Opponent Type */}
+      {step === "opponent" && (
+        <>
+          <div className="eyebrow">Choose your opponent</div>
+          <h1 className="page-title">WHO DO YOU WANT TO FIGHT?</h1>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginTop: 8 }}>
+            <button
+              className="card choice"
+              onClick={() => handleOpponentPick("ai")}
+              style={{ textAlign: "left", cursor: "pointer", minHeight: 180 }}
+            >
+              <div style={{ fontSize: 36, marginBottom: 12 }}>🤖</div>
+              <strong style={{ fontSize: 20 }}>AI PERSONA</strong>
+              <p style={{ color: "var(--muted)", marginTop: 6, lineHeight: 1.5 }}>
+                Debate against a styled AI opponent with unique personality and tactics.
+              </p>
+              <span style={{ color: "var(--green)", fontWeight: 900, fontSize: 12 }}>STARTS INSTANTLY</span>
+            </button>
+            <button
+              className="card choice"
+              onClick={() => handleOpponentPick("human")}
+              style={{ textAlign: "left", cursor: "pointer", minHeight: 180, opacity: 0.5, pointerEvents: "none" }}
+            >
+              <div style={{ fontSize: 36, marginBottom: 12 }}>👤</div>
+              <strong style={{ fontSize: 20 }}>HUMAN OPPONENT</strong>
+              <p style={{ color: "var(--muted)", marginTop: 6, lineHeight: 1.5 }}>
+                Get matched with another real player. Coming soon.
+              </p>
+              <span style={{ color: "var(--muted)", fontWeight: 900, fontSize: 12 }}>COMING SOON</span>
+            </button>
+          </div>
+          <button className="pill" style={{ marginTop: 20 }} onClick={() => setStep("category")}>
+            &larr; Back
+          </button>
+        </>
+      )}
+
+      {/* STEP: Persona Selection */}
+      {step === "persona" && (
+        <>
+          <div className="eyebrow">Pick your opponent</div>
+          <h1 className="page-title">CHOOSE YOUR CHALLENGE</h1>
+
+          {/* Tier selector */}
+          <div style={{ display: "flex", gap: 10, marginBottom: 24 }}>
+            {(["easy", "medium", "hard"] as const).map((tier) => (
+              <button
+                key={tier}
+                className={`option ${selectedTier === tier ? "selected" : ""}`}
+                onClick={() => setSelectedTier(selectedTier === tier ? null : tier)}
+                style={{ textTransform: "capitalize" }}
+              >
+                {tier}
+              </button>
+            ))}
+          </div>
+
+          {/* Persona grid */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 14 }}>
+            {filteredPersonas.map((p) => (
+              <button
+                key={p.id}
+                className="card choice"
+                onClick={() => handlePersonaPick(p)}
+                style={{ textAlign: "left", cursor: "pointer", borderLeft: `3px solid ${p.color}` }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+                  <div
+                    style={{
+                      width: 42, height: 42, borderRadius: 12,
+                      background: `${p.color}22`, color: p.color,
+                      display: "grid", placeItems: "center",
+                      fontWeight: 900, fontSize: 18,
+                    }}
+                  >
+                    {p.avatar}
+                  </div>
+                  <div>
+                    <strong style={{ fontSize: 16 }}>{p.name}</strong>
+                    <div style={{ color: "var(--muted)", fontSize: 12, fontWeight: 800 }}>{p.title}</div>
+                  </div>
+                  <div
+                    style={{
+                      marginLeft: "auto",
+                      fontSize: 11, fontWeight: 900,
+                      color: getDifficultyColor(p.difficulty),
+                      padding: "3px 8px",
+                      borderRadius: 6,
+                      background: `${getDifficultyColor(p.difficulty)}15`,
+                    }}
+                  >
+                    {getDifficultyLabel(p.difficulty)}
+                  </div>
+                </div>
+                <p style={{ color: "var(--muted)", fontSize: 13, lineHeight: 1.5, margin: 0 }}>
+                  {p.style}
+                </p>
+              </button>
+            ))}
+          </div>
+          <button className="pill" style={{ marginTop: 20 }} onClick={() => setStep("opponent")}>
+            &larr; Back
+          </button>
+        </>
+      )}
+
+      {/* STEP: Configure (format + side) */}
+      {step === "configure" && (
+        <>
+          <div className="eyebrow">Configure your debate</div>
+          <h1 className="page-title">SET THE RULES</h1>
+
+          {/* Selected info */}
+          <div className="card" style={{ marginBottom: 16, padding: "16px 20px", display: "flex", alignItems: "center", gap: 16 }}>
+            {selectedPersona && (
+              <div
+                style={{
+                  width: 48, height: 48, borderRadius: 14,
+                  background: `${selectedPersona.color}22`, color: selectedPersona.color,
+                  display: "grid", placeItems: "center",
+                  fontWeight: 900, fontSize: 20, flexShrink: 0,
+                }}
+              >
+                {selectedPersona.avatar}
+              </div>
+            )}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, color: "var(--muted)", fontWeight: 800, textTransform: "uppercase", letterSpacing: ".08em" }}>
+                Topic
+              </div>
+              <div style={{ fontSize: 15, lineHeight: 1.4, marginTop: 2 }}>
+                &ldquo;{topic}&rdquo;
+              </div>
+            </div>
+            {selectedPersona && (
+              <div style={{ textAlign: "right", flexShrink: 0 }}>
+                <div style={{ fontSize: 13, color: "var(--muted)", fontWeight: 800 }}>VS</div>
+                <div style={{ fontWeight: 900, color: selectedPersona.color }}>{selectedPersona.name}</div>
+              </div>
+            )}
+          </div>
+
+          <section className="card">
+            <div style={{ display: "grid", gap: 20 }}>
+              {/* Format */}
+              <div>
+                <div className="eyebrow" style={{ marginBottom: 10 }}>Format</div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  {["Text", "Audio"].map((x) => (
+                    <button
+                      onClick={() => setFormat(x)}
+                      className={`option ${format === x ? "selected" : ""}`}
+                      key={x}
+                    >
+                      {x} debate
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Side */}
+              <div>
+                <div className="eyebrow" style={{ marginBottom: 10 }}>Your side</div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  {["For", "Against", "Random"].map((x) => (
+                    <button
+                      onClick={() => setSide(x)}
+                      className={`option ${side === x ? "selected" : ""}`}
+                      key={x}
+                    >
+                      {x}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Start */}
+              <div style={{ display: "flex", gap: 12 }}>
+                <button className="pill" onClick={() => setStep(selectedPersona ? "persona" : "opponent")}>
+                  &larr; Back
+                </button>
+                <button className="button" style={{ flex: 1 }} onClick={handleStart}>
+                  Start debate
+                </button>
+              </div>
+            </div>
+          </section>
+        </>
+      )}
+
+      {/* Topic picker modal */}
       {showPicker && (
         <div className="modal-overlay" onClick={() => setShowPicker(false)}>
           <div className="modal-content card" onClick={(e) => e.stopPropagation()}>
@@ -271,7 +522,7 @@ export default function NewDebate() {
               {(topics[cat] || []).map((t) => (
                 <button
                   key={t}
-                  onClick={() => { setTopic(t); setShowPicker(false); }}
+                  onClick={() => handleTopicPick(t)}
                   className={`topic-option ${topic === t ? "selected" : ""}`}
                 >
                   &ldquo;{t}&rdquo;
@@ -281,61 +532,6 @@ export default function NewDebate() {
           </div>
         </div>
       )}
-
-      <section className="card" style={{ marginTop: 24 }}>
-        <div className="eyebrow">Your motion</div>
-        <div
-          className="topic-pick-trigger"
-          onClick={() => setShowPicker(true)}
-          style={{
-            marginTop: 8,
-            padding: "14px 16px",
-            border: `1px solid ${topic ? "var(--red-light)" : "var(--line)"}`,
-            borderRadius: 12,
-            background: topic ? "#311217" : "#0c0d10",
-            color: topic ? "white" : "var(--muted)",
-            cursor: "pointer",
-            fontSize: 15,
-            lineHeight: 1.5,
-          }}
-        >
-          {topic ? `"${topic}"` : "Click to choose a topic…"}
-        </div>
-        <div className="controls">
-          <div>
-            {["Text", "Audio"].map((x) => (
-              <button
-                onClick={() => setFormat(x)}
-                className={`option ${format === x ? "selected" : ""}`}
-                key={x}
-              >
-                {x} debate
-              </button>
-            ))}
-          </div>
-          <div>
-            {["For", "Against", "Random"].map((x) => (
-              <button
-                onClick={() => setSide(x)}
-                className={`option ${side === x ? "selected" : ""}`}
-                key={x}
-              >
-                {x}
-              </button>
-            ))}
-          </div>
-          <button
-            className="button"
-            disabled={!topic}
-            onClick={async () => {
-              const id = await createDebate({ topic, category: cat, format, side });
-              router.push(`/debate/${id}`);
-            }}
-          >
-            Find opponent
-          </button>
-        </div>
-      </section>
     </AppShell>
   );
 }

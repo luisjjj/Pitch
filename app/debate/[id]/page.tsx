@@ -5,6 +5,7 @@ import { useRouter, useParams } from "next/navigation";
 import { Send, LoaderCircle } from "lucide-react";
 import { AppShell } from "@/components/web/AppShell";
 import { AudioRecorder } from "@/components/web/AudioRecorder";
+import { getPersonaById } from "@/lib/personas";
 
 interface Debate {
   id: string;
@@ -15,6 +16,8 @@ interface Debate {
   created_by: string;
   opponent_id: string | null;
   opponent_name: string | null;
+  persona_id: string | null;
+  opponent_type: string;
 }
 
 export default function DebateRoom() {
@@ -27,10 +30,15 @@ export default function DebateRoom() {
   const [transcribeProgress, setTranscribeProgress] = useState("");
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
   const [audioDuration, setAudioDuration] = useState(0);
+  const [aiThinking, setAiThinking] = useState(false);
+  const [aiResponse, setAiResponse] = useState<string | null>(null);
+  const [round, setRound] = useState(1);
   const r = useRouter();
   const params = useParams();
   const debateId = params.id as string;
   const transcriberRef = useRef<any>(null);
+
+  const persona = debate?.persona_id ? getPersonaById(debate.persona_id) : null;
 
   useEffect(() => {
     async function load() {
@@ -54,23 +62,16 @@ export default function DebateRoom() {
   const transcribeAudio = useCallback(async (blob: Blob): Promise<string> => {
     setTranscribing(true);
     setTranscribeProgress("Loading transcription model...");
-
     try {
       const { BrowserWhisper } = await import("browser-whisper");
-
       if (!transcriberRef.current) {
         setTranscribeProgress("Downloading whisper model (first time only)...");
-        transcriberRef.current = new BrowserWhisper({
-          model: "whisper-base",
-          language: "en",
-        });
+        transcriberRef.current = new BrowserWhisper({ model: "whisper-base", language: "en" });
       }
-
       setTranscribeProgress("Transcribing audio...");
       const file = new File([blob], "argument.webm", { type: "audio/webm" });
       const segments = await transcriberRef.current.transcribe(file).collect();
       const fullText = segments.map((s: any) => s.text).join(" ").trim();
-
       setTranscribing(false);
       setTranscribeProgress("");
       return fullText;
@@ -82,21 +83,42 @@ export default function DebateRoom() {
     }
   }, []);
 
+  const generateAIResponse = useCallback(async (userArgument: string) => {
+    if (!debate || !persona) return;
+    setAiThinking(true);
+    try {
+      const res = await fetch(`/api/debates/${debateId}/ai-respond`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          personaId: persona.id,
+          topic: debate.topic,
+          userArgument,
+          round,
+          side: "against",
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAiResponse(data.content);
+      }
+    } catch (err) {
+      console.error("AI response failed:", err);
+    } finally {
+      setAiThinking(false);
+    }
+  }, [debate, persona, debateId, round]);
+
   const handleSubmit = useCallback(async () => {
     if (!debate) return;
     setSubmitting(true);
-
     try {
       let content = text;
       let audioUrl = "";
       let transcription = "";
 
-      // Handle audio format
       if (debate.format === "Audio" && audioBlob) {
-        // Transcribe in browser
         transcription = await transcribeAudio(audioBlob);
-
-        // Upload audio to Vercel Blob
         setTranscribeProgress("Uploading audio...");
         const formData = new FormData();
         formData.append("file", audioBlob, "argument.webm");
@@ -107,7 +129,7 @@ export default function DebateRoom() {
         content = transcription || text;
       }
 
-      // Submit argument
+      // Save user argument
       const res = await fetch(`/api/debates/${debateId}/arguments`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -117,14 +139,17 @@ export default function DebateRoom() {
           audioDuration: audioDuration || undefined,
           transcription: transcription || undefined,
           side: "for",
-          round: 1,
+          round,
         }),
       });
-
       if (!res.ok) throw new Error("Failed to submit argument");
 
       setSubmitted(true);
-      setTimeout(() => r.push(`/debate/${debateId}/results`), 1500);
+
+      // If AI opponent, generate response
+      if (debate.opponent_type === "ai" && persona) {
+        await generateAIResponse(content);
+      }
     } catch (err) {
       console.error("Submit failed:", err);
       alert("Failed to submit. Please try again.");
@@ -132,23 +157,35 @@ export default function DebateRoom() {
       setSubmitting(false);
       setTranscribeProgress("");
     }
-  }, [debate, text, audioBlob, audioDuration, debateId, r, transcribeAudio]);
+  }, [debate, text, audioBlob, audioDuration, debateId, round, persona, transcribeAudio, generateAIResponse]);
 
   const isAudio = debate?.format === "Audio";
   const canSubmit = isAudio ? !!audioBlob : !!text.trim();
+
+  if (loading) {
+    return (
+      <AppShell>
+        <div style={{ textAlign: "center", padding: 60, color: "var(--muted)" }}>
+          <LoaderCircle className="spin" size={24} />
+          <p style={{ marginTop: 12 }}>Loading debate...</p>
+        </div>
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell>
       <div className="topic-bar">
         <div>
-          <div className="eyebrow">Round 1 of 3</div>
+          <div className="eyebrow">Round {round} of 3</div>
           <strong>{debate?.topic || `Debate #${debateId}`}</strong>
         </div>
         <div className="timer">03:00</div>
       </div>
 
       <div className="room-grid">
-        <article className="card fighter active">
+        {/* User card */}
+        <article className={`card fighter ${!submitted ? "active" : ""}`}>
           <div className="fighter-head">
             <div style={{ display: "flex", gap: 11, alignItems: "center" }}>
               <div className="avatar">Y</div>
@@ -159,7 +196,7 @@ export default function DebateRoom() {
                 </div>
               </div>
             </div>
-            <span className="tag">ACTIVE</span>
+            <span className="tag">{submitted ? "DONE" : "ACTIVE"}</span>
           </div>
           <div className="argument">
             {submitted
@@ -168,21 +205,57 @@ export default function DebateRoom() {
           </div>
         </article>
 
-        <article className="card fighter muted">
+        {/* Opponent card */}
+        <article className={`card fighter ${aiThinking || (!submitted && !aiResponse) ? "muted" : ""}`}>
           <div className="fighter-head">
             <div style={{ display: "flex", gap: 11, alignItems: "center" }}>
-              <div className="avatar" style={{ background: "linear-gradient(135deg,#4768aa,#132142)" }}>?</div>
+              {persona ? (
+                <div
+                  style={{
+                    width: 43, height: 43, borderRadius: 14,
+                    background: `${persona.color}22`, color: persona.color,
+                    display: "grid", placeItems: "center",
+                    fontWeight: 900, fontSize: 18,
+                  }}
+                >
+                  {persona.avatar}
+                </div>
+              ) : (
+                <div className="avatar" style={{ background: "linear-gradient(135deg,#4768aa,#132142)" }}>?</div>
+              )}
               <div>
-                <strong>{debate?.opponent_name || "Opponent"}</strong>
-                <div className="eyebrow">AGAINST &middot; WAITING</div>
+                <strong>{persona?.name || debate?.opponent_name || "Opponent"}</strong>
+                <div className="eyebrow">
+                  {persona ? (
+                    <span style={{ color: persona.color }}>{persona.title}</span>
+                  ) : (
+                    <>AGAINST &middot; WAITING</>
+                  )}
+                </div>
               </div>
             </div>
           </div>
-          <div className="argument">Waiting for opponent to join&hellip;</div>
+          <div className="argument">
+            {aiThinking ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <LoaderCircle className="spin" size={16} />
+                <span>{persona?.name} is thinking...</span>
+              </div>
+            ) : aiResponse ? (
+              aiResponse
+            ) : (
+              <span style={{ color: "var(--muted)" }}>
+                {debate?.opponent_type === "ai"
+                  ? `${persona?.name || "AI"} will respond after your argument.`
+                  : "Waiting for opponent to join\u2026"}
+              </span>
+            )}
+          </div>
         </article>
       </div>
 
-      {!submitted && (
+      {/* Input area */}
+      {!submitted ? (
         <section className="card editor">
           <div className="eyebrow">
             Your opening statement {isAudio ? "(audio)" : "(text)"}
@@ -190,11 +263,7 @@ export default function DebateRoom() {
 
           {isAudio ? (
             <div style={{ padding: "12px 0" }}>
-              <AudioRecorder
-                onRecordingComplete={handleAudioComplete}
-                maxDuration={180}
-                disabled={submitting}
-              />
+              <AudioRecorder onRecordingComplete={handleAudioComplete} maxDuration={180} disabled={submitting} />
             </div>
           ) : (
             <textarea
@@ -213,11 +282,7 @@ export default function DebateRoom() {
                   : "Record your argument"
                 : `${text.length}/700 characters`}
             </span>
-            <button
-              className="button"
-              disabled={!canSubmit || submitting}
-              onClick={handleSubmit}
-            >
+            <button className="button" disabled={!canSubmit || submitting} onClick={handleSubmit}>
               {submitting ? (
                 <>
                   <LoaderCircle className="spin" size={16} />
@@ -232,19 +297,41 @@ export default function DebateRoom() {
           </div>
 
           {transcribing && transcribeProgress && (
-            <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 8 }}>
-              {transcribeProgress}
-            </p>
+            <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 8 }}>{transcribeProgress}</p>
           )}
         </section>
-      )}
-
-      {submitted && (
+      ) : (
         <section className="card" style={{ textAlign: "center", padding: 32 }}>
-          <div className="eyebrow">Submitted</div>
+          <div className="eyebrow">Round {round} submitted</div>
           <p style={{ color: "var(--muted)", marginTop: 8 }}>
-            Your argument is locked in. Redirecting to results...
+            {debate?.opponent_type === "ai" && aiResponse
+              ? `${persona?.name} has responded. Ready for the next round.`
+              : debate?.opponent_type === "ai"
+                ? "Waiting for AI response..."
+                : "Waiting for opponent..."}
           </p>
+          {aiResponse && (
+            <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 20 }}>
+              {round < 3 ? (
+                <button
+                  className="button"
+                  onClick={() => {
+                    setRound((r) => r + 1);
+                    setSubmitted(false);
+                    setAiResponse(null);
+                    setText("");
+                    setAudioBlob(null);
+                  }}
+                >
+                  Next round &rarr;
+                </button>
+              ) : (
+                <button className="button" onClick={() => r.push(`/debate/${debateId}/results`)}>
+                  See results
+                </button>
+              )}
+            </div>
+          )}
         </section>
       )}
     </AppShell>

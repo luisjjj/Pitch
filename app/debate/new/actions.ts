@@ -10,15 +10,18 @@ export async function createDebate(formData: {
   category: string;
   format: string;
   side: string;
+  personaId?: string;
 }) {
   const session = await auth.api.getSession({ headers: headers() });
   if (!session) redirect("/auth?next=/debate/new");
 
+  const opponentType = formData.personaId ? "ai" : "human";
+
   const result = await pool.query(
-    `INSERT INTO debates (topic, category, format, status, created_by)
-     VALUES ($1, $2, $3, 'pending', $4)
+    `INSERT INTO debates (topic, category, format, status, created_by, persona_id, opponent_type)
+     VALUES ($1, $2, $3, 'pending', $4, $5, $6)
      RETURNING id`,
-    [formData.topic, formData.category, formData.format, session.user.id]
+    [formData.topic, formData.category, formData.format, session.user.id, formData.personaId || null, opponentType]
   );
 
   const debateId = result.rows[0].id;
