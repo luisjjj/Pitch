@@ -252,6 +252,7 @@ export default function NewDebate() {
   function handleTopicPick(t: string) {
     setTopic(t);
     setShowPicker(false);
+    setStep("opponent");
   }
 
   function handleOpponentPick(type: "ai" | "human") {
@@ -269,14 +270,19 @@ export default function NewDebate() {
   }
 
   async function handleStart() {
-    const id = await createDebate({
-      topic,
-      category: cat,
-      format,
-      side,
-      personaId: selectedPersona?.id,
-    });
-    router.push(`/debate/${id}`);
+    try {
+      const id = await createDebate({
+        topic,
+        category: cat,
+        format,
+        side,
+        personaId: selectedPersona?.id,
+      });
+      if (id) router.push(`/debate/${id}`);
+    } catch (err) {
+      console.error("Failed to create debate:", err);
+      alert("Failed to start debate. Please try again.");
+    }
   }
 
   return (
