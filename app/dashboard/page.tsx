@@ -2,9 +2,64 @@ import Link from "next/link";
 import { AppShell } from "@/components/web/AppShell";
 import { FireIcon } from "@/components/web/Icons";
 import { getActiveDebates, getDebateStats } from "@/app/debate/new/actions";
+import { auth } from "@/lib/auth";
+import { pool } from "@/lib/db";
+import { headers } from "next/headers";
 
 export default async function Dashboard() {
+  const session = await auth.api.getSession({ headers: headers() });
   const [debates, stats] = await Promise.all([getActiveDebates(), getDebateStats()]);
+
+  // Fetch recent history and user stats
+  let history: any[] = [];
+  let userStats = { totalDebates: 0, wins: 0, losses: 0, personasFaced: 0 };
+  let userXP = 0;
+  let userRank = "Bronze";
+  let userStreak = 0;
+
+  if (session) {
+    const historyResult = await pool.query(
+      `SELECT d.*,
+        u.name as opponent_user_name,
+        (SELECT content FROM debate_arguments da WHERE da.debate_id = d.id AND da.user_id = d.created_by ORDER BY da.round ASC LIMIT 1) as user_first_argument,
+        (SELECT COUNT(*) FROM debate_arguments da WHERE da.debate_id = d.id) as argument_count
+       FROM debates d
+       LEFT JOIN users u ON d.opponent_id = u.id
+       WHERE d.created_by = $1 AND d.status = 'completed'
+       ORDER BY d.created_at DESC
+       LIMIT 5`,
+      [session.user.id]
+    );
+    history = historyResult.rows;
+
+    const statsResult = await pool.query(
+      `SELECT
+        COUNT(*) as total_debates,
+        COUNT(*) FILTER (WHERE winner_id = $1) as wins,
+        COUNT(*) FILTER (WHERE winner_id != $1 AND winner_id IS NOT NULL) as losses,
+        COUNT(DISTINCT persona_id) as personas_faced
+       FROM debates
+       WHERE created_by = $1 AND status = 'completed'`,
+      [session.user.id]
+    );
+    const s = statsResult.rows[0];
+    userStats = {
+      totalDebates: parseInt(s.total_debates) || 0,
+      wins: parseInt(s.wins) || 0,
+      losses: parseInt(s.losses) || 0,
+      personasFaced: parseInt(s.personas_faced) || 0,
+    };
+
+    const userResult = await pool.query(
+      `SELECT xp, rank, current_streak FROM users WHERE id = $1`,
+      [session.user.id]
+    );
+    if (userResult.rows.length > 0) {
+      userXP = userResult.rows[0].xp || 0;
+      userRank = userResult.rows[0].rank || "Bronze";
+      userStreak = userResult.rows[0].current_streak || 0;
+    }
+  }
 
   return (
     <AppShell>
@@ -15,10 +70,10 @@ export default async function Dashboard() {
 
       <div className="stat-grid">
         {[
-          [String(stats.points), "Pitch points"],
-          [`${stats.wins} - ${stats.losses}`, "Win / loss"],
-          [`${stats.winRate}%`, "Win rate"],
-          ["—", "Rank"],
+          [`${userStats.wins} - ${userStats.losses}`, "Win / loss"],
+          [`${userStats.totalDebates > 0 ? Math.round((userStats.wins / userStats.totalDebates) * 100) : 0}%`, "Win rate"],
+          [userRank, "Rank"],
+          [`${userXP} XP`, "Total XP"],
         ].map(([a, b]) => (
           <div className="card stat" key={b}><small>{b}</small><b>{a}</b></div>
         ))}
@@ -58,28 +113,126 @@ export default async function Dashboard() {
         <aside className="card">
           <div className="eyebrow">Your streak</div>
           <h2 style={{ font: "700 30px var(--font-display)", margin: "7px 0", display: "flex", alignItems: "center", gap: 8 }}>
-            0 DAYS <FireIcon size={24} color="var(--muted)" />
+            {userStreak} DAYS <FireIcon size={24} color={userStreak > 0 ? "var(--gold)" : "var(--muted)"} />
           </h2>
           <p style={{ color: "var(--muted)", lineHeight: 1.6 }}>
-            Debate once to start your streak and earn a 1.5x point boost.
+            {userStreak > 0
+              ? `You're on fire! Keep debating daily for a 1.5x point boost.`
+              : `Debate once to start your streak and earn a 1.5x point boost.`
+            }
           </p>
           <div style={{ display: "flex", gap: 7, marginTop: 24 }}>
             {["M", "T", "W", "T", "F", "S", "S"].map((x, i) => (
               <span key={i} style={{
                 display: "grid", placeItems: "center", width: 32, height: 32,
-                borderRadius: 10, background: "#24262c", fontWeight: 900,
+                borderRadius: 10,
+                background: i < userStreak ? "var(--gold)22" : "#24262c",
+                color: i < userStreak ? "var(--gold)" : "var(--muted)",
+                fontWeight: 900,
               }}>{x}</span>
             ))}
           </div>
         </aside>
       </div>
 
+      {/* Recent history */}
       <section className="card" style={{ marginTop: 16 }}>
-        <div className="eyebrow">Latest result</div>
-        <p style={{ color: "var(--muted)", lineHeight: 1.6 }}>
-          No debate results yet. Complete a debate to see your score here.
-        </p>
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">Recent debates</div>
+            <h2 style={{ fontSize: 22, margin: 6 }}>HISTORY</h2>
+          </div>
+          {history.length > 0 && (
+            <Link href="/profile" className="button secondary" style={{ fontSize: 13, padding: "6px 14px" }}>
+              View all
+            </Link>
+          )}
+        </div>
+        {history.length === 0 ? (
+          <p style={{ color: "var(--muted)", lineHeight: 1.6 }}>
+            No debate results yet. Complete a debate to see your history here.
+          </p>
+        ) : (
+          <div style={{ display: "grid", gap: 10 }}>
+            {history.map((d: any) => {
+              const persona = d.persona_id ? getPersonaById(d.persona_id) : null;
+              const won = d.winner_id === session?.user?.id;
+              const opponentName = persona?.name || d.opponent_user_name || "Opponent";
+              const date = new Date(d.created_at);
+              const timeAgo = getTimeAgo(date);
+
+              return (
+                <Link
+                  key={d.id}
+                  href={`/debate/${d.id}/results`}
+                  style={{ textDecoration: "none" }}
+                >
+                  <div
+                    style={{
+                      padding: "14px 18px",
+                      background: "#0c0d10",
+                      borderRadius: 14,
+                      borderLeft: `3px solid ${won ? "var(--gold)" : "#4768aa"}`,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      cursor: "pointer",
+                      transition: "all 0.2s ease",
+                    }}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 800, fontSize: 14, marginBottom: 4 }}>
+                        &ldquo;{d.topic}&rdquo;
+                      </div>
+                      <div style={{ fontSize: 12, color: "var(--muted)" }}>
+                        vs {opponentName} &middot; {d.category}
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right" }}>
+                      <span
+                        style={{
+                          fontSize: 11,
+                          fontWeight: 900,
+                          padding: "3px 10px",
+                          borderRadius: 8,
+                          background: won ? "rgba(255,215,0,0.15)" : "rgba(71,104,170,0.15)",
+                          color: won ? "var(--gold)" : "#4768aa",
+                        }}
+                      >
+                        {won ? "WIN" : "LOSS"}
+                      </span>
+                      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 4 }}>{timeAgo}</div>
+                    </div>
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        )}
       </section>
     </AppShell>
   );
+}
+
+function getTimeAgo(date: Date): string {
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMins / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffMins < 1) return "Just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  return date.toLocaleDateString();
+}
+
+function getPersonaById(id: string) {
+  try {
+    const { getPersonaById: getPersona } = require("@/lib/personas");
+    return getPersona(id);
+  } catch {
+    return null;
+  }
 }
