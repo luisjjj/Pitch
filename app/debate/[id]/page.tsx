@@ -2,9 +2,8 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter, useParams } from "next/navigation";
-import { Send, LoaderCircle } from "lucide-react";
+import { Send, LoaderCircle, ArrowLeft } from "lucide-react";
 import { AppShell } from "@/components/web/AppShell";
-import { AudioRecorder } from "@/components/web/AudioRecorder";
 import { getPersonaById } from "@/lib/personas";
 
 interface Debate {
@@ -15,108 +14,118 @@ interface Debate {
   status: string;
   created_by: string;
   opponent_id: string | null;
-  opponent_name: string | null;
   persona_id: string | null;
   opponent_type: string;
 }
 
-interface DebateArgument {
+interface ChatMessage {
   id: string;
-  debate_id: string;
-  user_id: string;
+  sender: "user" | "ai" | "system";
+  name: string;
+  avatar: string;
+  color: string;
   content: string;
-  audio_url: string | null;
   round: number;
-  side: string;
+  timestamp: Date;
 }
 
-const ROUND_TIME = 180; // 3 minutes in seconds
+const ROUND_TIME = 180;
 
 export default function DebateRoom() {
-  const [text, setText] = useState("");
   const [debate, setDebate] = useState<Debate | null>(null);
   const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [transcribing, setTranscribing] = useState(false);
-  const [transcribeProgress, setTranscribeProgress] = useState("");
-  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
-  const [audioDuration, setAudioDuration] = useState(0);
-  const [aiThinking, setAiThinking] = useState(false);
-  const [aiResponse, setAiResponse] = useState<string | null>(null);
+  const [input, setInput] = useState("");
+  const [sending, setSending] = useState(false);
   const [round, setRound] = useState(1);
+  const [timeLeft, setTimeLeft] = useState(ROUND_TIME);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [completed, setCompleted] = useState(false);
   const [resultData, setResultData] = useState<any>(null);
-  const [timeLeft, setTimeLeft] = useState(ROUND_TIME);
-  const [arguments_, setArguments] = useState<DebateArgument[]>([]);
+  const [roundOver, setRoundOver] = useState(false);
   const r = useRouter();
   const params = useParams();
   const debateId = params.id as string;
-  const transcriberRef = useRef<any>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const persona = debate?.persona_id ? getPersonaById(debate.persona_id) : null;
 
-  // Load debate + existing arguments
+  // Load debate
   useEffect(() => {
     async function load() {
       try {
         const res = await fetch(`/api/debates/${debateId}`);
-        if (res.ok) {
-          const data = await res.json();
-          setDebate(data.debate || data);
-        }
-      } catch {
-        // debate not found
-      } finally {
+        if (res.ok) setDebate(await res.json());
+      } catch {} finally {
         setLoading(false);
       }
     }
     load();
   }, [debateId]);
 
-  // Load existing arguments for this debate
+  // Load existing messages
   useEffect(() => {
     if (!debate) return;
-    async function loadArgs() {
+    async function loadMessages() {
       try {
         const res = await fetch(`/api/debates/${debateId}/arguments?all=true`);
         if (res.ok) {
           const data = await res.json();
           const args = data.arguments || data || [];
-          setArguments(args);
+          const chatMsgs: ChatMessage[] = [];
 
-          // Restore state from DB
-          const myArgs = args.filter((a: DebateArgument) => a.user_id === debate!.created_by);
-          const aiArgs = args.filter((a: DebateArgument) => a.user_id.startsWith("ai-"));
+          for (const arg of args) {
+            const isUser = arg.user_id === debate!.created_by;
+            const isAi = arg.user_id.startsWith("ai-");
+            if (!arg.content || !arg.content.trim()) continue;
 
-          const maxRound = Math.max(...args.map((a: DebateArgument) => a.round), 0);
-          setRound(maxRound || 1);
-
-          // If we have our args for current round, mark as submitted
-          const currentMyArg = myArgs.find((a: DebateArgument) => a.round === maxRound);
-          const currentAiArg = aiArgs.find((a: DebateArgument) => a.round === maxRound);
-
-          if (currentMyArg && currentMyArg.content && currentMyArg.content.trim() !== "") {
-            setText(currentMyArg.content);
+            chatMsgs.push({
+              id: arg.id,
+              sender: isUser ? "user" : isAi ? "ai" : "system",
+              name: isUser ? "You" : persona?.name || "Opponent",
+              avatar: isUser ? "Y" : persona?.avatar || "?",
+              color: isUser ? "var(--red-light)" : persona?.color || "#4768aa",
+              content: arg.content,
+              round: arg.round,
+              timestamp: new Date(arg.created_at || Date.now()),
+            });
           }
-          if (currentAiArg && currentAiArg.content) {
-            setAiResponse(currentAiArg.content);
+
+          setMessages(chatMsgs);
+
+          const maxRound = Math.max(...args.map((a: any) => a.round), 1);
+          setRound(maxRound);
+
+          // Check if current round is complete (both sides submitted)
+          const userInRound = args.find((a: any) => a.user_id === debate!.created_by && a.round === maxRound && a.content?.trim());
+          const aiInRound = args.find((a: any) => a.user_id.startsWith("ai-") && a.round === maxRound);
+          if (userInRound && aiInRound) {
+            setRoundOver(true);
+          } else if (userInRound && !aiInRound) {
+            // User submitted but AI hasn't responded yet - trigger AI response
+            setRoundOver(false);
+            triggerAiResponse(userInRound.content, maxRound);
           }
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
-    loadArgs();
+    loadMessages();
   }, [debate, debateId]);
 
-  // Countdown timer
+  // Auto-scroll to bottom
   useEffect(() => {
-    if (loading || completed) return;
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // Timer
+  useEffect(() => {
+    if (loading || completed || roundOver) return;
     timerRef.current = setInterval(() => {
       setTimeLeft((t) => {
         if (t <= 1) {
           if (timerRef.current) clearInterval(timerRef.current);
+          handleTimeUp();
           return 0;
         }
         return t - 1;
@@ -125,11 +134,11 @@ export default function DebateRoom() {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
     };
-  }, [loading, completed, round]);
+  }, [loading, completed, roundOver, round]);
 
-  // Reset timer on round change
   useEffect(() => {
     setTimeLeft(ROUND_TIME);
+    setRoundOver(false);
   }, [round]);
 
   const formatTime = (s: number) => {
@@ -138,34 +147,127 @@ export default function DebateRoom() {
     return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
   };
 
-  const handleAudioComplete = useCallback((blob: Blob, duration: number) => {
-    setAudioBlob(blob);
-    setAudioDuration(duration);
+  const addSystemMessage = useCallback((content: string) => {
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: `sys-${Date.now()}`,
+        sender: "system",
+        name: "System",
+        avatar: "",
+        color: "",
+        content,
+        round: 0,
+        timestamp: new Date(),
+      },
+    ]);
   }, []);
 
-  const transcribeAudio = useCallback(async (blob: Blob): Promise<string> => {
-    setTranscribing(true);
-    setTranscribeProgress("Loading transcription model...");
+  const triggerAiResponse = useCallback(async (userArgument: string, currentRound: number) => {
+    if (!debate || !persona) return;
+    setSending(true);
+
     try {
-      const { BrowserWhisper } = await import("browser-whisper");
-      if (!transcriberRef.current) {
-        setTranscribeProgress("Downloading whisper model (first time only)...");
-        transcriberRef.current = new BrowserWhisper({ model: "whisper-base", language: "en" });
+      const res = await fetch(`/api/debates/${debateId}/ai-respond`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          personaId: persona.id,
+          topic: debate.topic,
+          userArgument,
+          round: currentRound,
+          side: "against",
+        }),
+      });
+
+      if (res.ok) {
+        const data = await res.json();
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `ai-${Date.now()}`,
+            sender: "ai",
+            name: persona.name,
+            avatar: persona.avatar,
+            color: persona.color,
+            content: data.content,
+            round: currentRound,
+            timestamp: new Date(),
+          },
+        ]);
       }
-      setTranscribeProgress("Transcribing audio...");
-      const file = new File([blob], "argument.webm", { type: "audio/webm" });
-      const segments = await transcriberRef.current.transcribe(file).collect();
-      const fullText = segments.map((s: any) => s.text).join(" ").trim();
-      setTranscribing(false);
-      setTranscribeProgress("");
-      return fullText;
     } catch (err) {
-      console.error("Transcription failed:", err);
-      setTranscribing(false);
-      setTranscribeProgress("");
-      return "";
+      console.error("AI response failed:", err);
+    } finally {
+      setSending(false);
+      setRoundOver(true);
     }
-  }, []);
+  }, [debate, persona, debateId]);
+
+  const handleTimeUp = useCallback(() => {
+    if (roundOver) return;
+    addSystemMessage(`Time's up for round ${round}! Moving to next round.`);
+    setRoundOver(true);
+  }, [round, roundOver, addSystemMessage]);
+
+  const handleSend = useCallback(async () => {
+    if (!input.trim() || !debate || sending) return;
+
+    const content = input.trim();
+    setInput("");
+    setSending(true);
+
+    // Add user message to chat immediately
+    const userMsg: ChatMessage = {
+      id: `user-${Date.now()}`,
+      sender: "user",
+      name: "You",
+      avatar: "Y",
+      color: "var(--red-light)",
+      content,
+      round,
+      timestamp: new Date(),
+    };
+    setMessages((prev) => [...prev, userMsg]);
+
+    // Save to DB
+    try {
+      await fetch(`/api/debates/${debateId}/arguments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          content,
+          side: "for",
+          round,
+        }),
+      });
+    } catch (err) {
+      console.error("Failed to save argument:", err);
+    }
+
+    // Generate AI response
+    if (debate.opponent_type === "ai" && persona) {
+      await triggerAiResponse(content, round);
+    } else {
+      setSending(false);
+      setRoundOver(true);
+    }
+
+    if (timerRef.current) clearInterval(timerRef.current);
+  }, [input, debate, sending, round, persona, debateId, triggerAiResponse]);
+
+  const handleNextRound = useCallback(() => {
+    if (round >= 3) {
+      // End debate
+      completeDebate();
+      return;
+    }
+    setRound((r) => r + 1);
+    setRoundOver(false);
+    setTimeLeft(ROUND_TIME);
+    addSystemMessage(`Round ${round + 1} begins. Make your case.`);
+    inputRef.current?.focus();
+  }, [round, addSystemMessage]);
 
   const completeDebate = useCallback(async () => {
     try {
@@ -180,108 +282,15 @@ export default function DebateRoom() {
     }
   }, [debateId]);
 
-  const generateAIResponse = useCallback(async (userArgument: string) => {
-    if (!debate || !persona) return;
-    setAiThinking(true);
-    setAiResponse(null);
-    try {
-      const res = await fetch(`/api/debates/${debateId}/ai-respond`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          personaId: persona.id,
-          topic: debate.topic,
-          userArgument,
-          round,
-          side: "against",
-        }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setAiResponse(data.content);
-      } else {
-        // If API fails, use a fallback response
-        setAiResponse(getLocalFallback(persona.name, round));
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        handleSend();
       }
-    } catch (err) {
-      console.error("AI response failed:", err);
-      setAiResponse(getLocalFallback(persona.name, round));
-    } finally {
-      setAiThinking(false);
-    }
-  }, [debate, persona, debateId, round]);
-
-  const handleSubmit = useCallback(async () => {
-    if (!debate) return;
-    setSubmitting(true);
-    try {
-      let content = text;
-      let audioUrl = "";
-      let transcription = "";
-
-      if (debate.format === "Audio" && audioBlob) {
-        transcription = await transcribeAudio(audioBlob);
-        setTranscribeProgress("Uploading audio...");
-        const formData = new FormData();
-        formData.append("file", audioBlob, "argument.webm");
-        const uploadRes = await fetch("/api/upload", { method: "POST", body: formData });
-        if (!uploadRes.ok) throw new Error("Upload failed");
-        const { url } = await uploadRes.json();
-        audioUrl = url;
-        content = transcription || text;
-      }
-
-      if (!content || !content.trim()) {
-        alert("Please write your argument before submitting.");
-        setSubmitting(false);
-        return;
-      }
-
-      // Save user argument
-      const res = await fetch(`/api/debates/${debateId}/arguments`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          content,
-          audioUrl: audioUrl || undefined,
-          audioDuration: audioDuration || undefined,
-          transcription: transcription || undefined,
-          side: "for",
-          round,
-        }),
-      });
-      if (!res.ok) throw new Error("Failed to submit argument");
-
-      // If AI opponent, generate response
-      if (debate.opponent_type === "ai" && persona) {
-        await generateAIResponse(content);
-      }
-    } catch (err) {
-      console.error("Submit failed:", err);
-      alert("Failed to submit. Please try again.");
-    } finally {
-      setSubmitting(false);
-      setTranscribeProgress("");
-    }
-  }, [debate, text, audioBlob, audioDuration, debateId, round, persona, transcribeAudio, generateAIResponse]);
-
-  const handleNextRound = useCallback(() => {
-    setRound((r) => r + 1);
-    setAiResponse(null);
-    setText("");
-    setAudioBlob(null);
-    setTimeLeft(ROUND_TIME);
-  }, []);
-
-  const isAudio = debate?.format === "Audio";
-  const canSubmit = isAudio ? !!audioBlob : !!text.trim();
-  const userSubmitted = arguments_.some(
-    (a) => a.user_id === debate?.created_by && a.round === round && a.content && a.content.trim() !== ""
+    },
+    [handleSend]
   );
-  const aiSubmitted = arguments_.some(
-    (a) => a.user_id.startsWith("ai-") && a.round === round && a.content
-  );
-  const bothDone = userSubmitted && (aiSubmitted || debate?.opponent_type !== "ai");
 
   if (loading) {
     return (
@@ -296,232 +305,223 @@ export default function DebateRoom() {
 
   return (
     <AppShell>
-      <div className="topic-bar">
-        <div>
-          <div className="eyebrow">Round {round} of 3</div>
-          <strong>{debate?.topic || `Debate #${debateId}`}</strong>
-        </div>
-        <div className="timer" style={{ color: timeLeft < 30 ? "var(--red-light)" : "var(--gold)" }}>
-          {formatTime(timeLeft)}
-        </div>
-      </div>
+      <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 80px)", maxWidth: 800, margin: "0 auto" }}>
+        {/* Chat header */}
+        <div style={{
+          display: "flex", alignItems: "center", gap: 12, padding: "12px 0",
+          borderBottom: "1px solid var(--line)", marginBottom: 0, flexShrink: 0,
+        }}>
+          <button
+            onClick={() => r.push("/dashboard")}
+            style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", padding: 4 }}
+          >
+            <ArrowLeft size={20} />
+          </button>
 
-      <div className="room-grid">
-        {/* User card */}
-        <article className={`card fighter ${!userSubmitted ? "active" : ""}`}>
-          <div className="fighter-head">
-            <div style={{ display: "flex", gap: 11, alignItems: "center" }}>
-              <div className="avatar">Y</div>
-              <div>
-                <strong>You</strong>
-                <div className="eyebrow">
-                  {debate?.format === "Audio" ? "AUDIO" : "TEXT"} &middot; {userSubmitted ? "DONE" : "YOUR TURN"}
-                </div>
-              </div>
+          {persona && (
+            <div style={{
+              width: 36, height: 36, borderRadius: 10,
+              background: `${persona.color}22`, color: persona.color,
+              display: "grid", placeItems: "center",
+              fontWeight: 900, fontSize: 14, flexShrink: 0,
+            }}>
+              {persona.avatar}
             </div>
-            <span className="tag">{userSubmitted ? "DONE" : "ACTIVE"}</span>
-          </div>
-          <div className="argument">
-            {userSubmitted
-              ? (text || arguments_.find((a) => a.user_id === debate?.created_by && a.round === round)?.content || "Your argument has been submitted.")
-              : "Make your opening case. The most convincing argument takes the round."}
-          </div>
-        </article>
-
-        {/* Opponent card */}
-        <article className={`card fighter ${aiThinking || (!userSubmitted && !aiResponse) ? "muted" : ""}`}>
-          <div className="fighter-head">
-            <div style={{ display: "flex", gap: 11, alignItems: "center" }}>
-              {persona ? (
-                <div
-                  style={{
-                    width: 43, height: 43, borderRadius: 14,
-                    background: `${persona.color}22`, color: persona.color,
-                    display: "grid", placeItems: "center",
-                    fontWeight: 900, fontSize: 18,
-                  }}
-                >
-                  {persona.avatar}
-                </div>
-              ) : (
-                <div className="avatar" style={{ background: "linear-gradient(135deg,#4768aa,#132142)" }}>?</div>
-              )}
-              <div>
-                <strong>{persona?.name || debate?.opponent_name || "Opponent"}</strong>
-                <div className="eyebrow">
-                  {persona ? (
-                    <span style={{ color: persona.color }}>{persona.title}</span>
-                  ) : (
-                    <>AGAINST &middot; WAITING</>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-          <div className="argument">
-            {aiThinking ? (
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <LoaderCircle className="spin" size={16} />
-                <span>{persona?.name} is thinking...</span>
-              </div>
-            ) : aiResponse ? (
-              aiResponse
-            ) : (
-              <span style={{ color: "var(--muted)" }}>
-                {debate?.opponent_type === "ai"
-                  ? `${persona?.name || "AI"} will respond after your argument.`
-                  : "Waiting for opponent to join\u2026"}
-              </span>
-            )}
-          </div>
-        </article>
-      </div>
-
-      {/* Input area */}
-      {!userSubmitted ? (
-        <section className="card editor">
-          <div className="eyebrow">
-            Your {round === 1 ? "opening" : round === 2 ? "rebuttal" : "closing"} statement {isAudio ? "(audio)" : "(text)"}
-          </div>
-
-          {isAudio ? (
-            <div style={{ padding: "12px 0" }}>
-              <AudioRecorder onRecordingComplete={handleAudioComplete} maxDuration={180} disabled={submitting} />
-            </div>
-          ) : (
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              maxLength={700}
-              placeholder="Build your argument. Be clear, be specific, make it count."
-            />
           )}
 
-          <div className="editor-foot">
-            <span>
-              {isAudio
-                ? audioBlob
-                  ? `${audioDuration}s recorded`
-                  : "Record your argument"
-                : `${text.length}/700 characters`}
-            </span>
-            <button className="button" disabled={!canSubmit || submitting} onClick={handleSubmit}>
-              {submitting ? (
-                <>
-                  <LoaderCircle className="spin" size={16} />
-                  {transcribing ? transcribeProgress : "Submitting..."}
-                </>
-              ) : (
-                <>
-                  Submit round <Send size={16} />
-                </>
-              )}
-            </button>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+              {persona?.name || "Opponent"}
+            </div>
+            <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 700 }}>
+              {debate?.topic?.slice(0, 50)}{debate?.topic && debate.topic.length > 50 ? "..." : ""}
+            </div>
           </div>
 
-          {transcribing && transcribeProgress && (
-            <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 8 }}>{transcribeProgress}</p>
+          <div style={{ textAlign: "right", flexShrink: 0 }}>
+            <div style={{
+              fontSize: 11, fontWeight: 900, color: "var(--muted)",
+              textTransform: "uppercase", letterSpacing: ".08em",
+            }}>
+              Round {round}/3
+            </div>
+            <div style={{
+              font: "700 16px var(--font-mono)",
+              color: timeLeft < 30 ? "var(--red-light)" : "var(--gold)",
+            }}>
+              {formatTime(timeLeft)}
+            </div>
+          </div>
+        </div>
+
+        {/* Messages area */}
+        <div style={{
+          flex: 1, overflowY: "auto", padding: "16px 0",
+          display: "flex", flexDirection: "column", gap: 8,
+        }}>
+          {messages.map((msg) => (
+            <ChatBubble key={msg.id} msg={msg} isOwn={msg.sender === "user"} />
+          ))}
+
+          {sending && persona && (
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-end", paddingLeft: 4 }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: 8,
+                background: `${persona.color}22`, color: persona.color,
+                display: "grid", placeItems: "center",
+                fontWeight: 900, fontSize: 11, flexShrink: 0,
+              }}>
+                {persona.avatar}
+              </div>
+              <div style={{
+                padding: "10px 14px", borderRadius: 14, borderTopLeftRadius: 4,
+                background: "#1a1c22", color: "var(--muted)", fontSize: 13,
+              }}>
+                <LoaderCircle className="spin" size={14} style={{ marginRight: 6 }} />
+                typing...
+              </div>
+            </div>
           )}
-        </section>
-      ) : (
-        <section className="card" style={{ textAlign: "center", padding: 32 }}>
-          <div className="eyebrow">Round {round} submitted</div>
-          <p style={{ color: "var(--muted)", marginTop: 8 }}>
-            {debate?.opponent_type === "ai" && aiResponse
-              ? `${persona?.name} has responded. Ready for the next round.`
-              : debate?.opponent_type === "ai"
-                ? "Waiting for AI response..."
-                : "Waiting for opponent..."}
-          </p>
+
+          <div ref={chatEndRef} />
+        </div>
+
+        {/* Input area */}
+        <div style={{
+          borderTop: "1px solid var(--line)", padding: "12px 0", flexShrink: 0,
+        }}>
           {completed && resultData ? (
-            <div style={{ marginTop: 24, padding: "20px 24px", background: "#0c0d10", borderRadius: 16, textAlign: "center" }}>
-              <div className="eyebrow" style={{ marginBottom: 8 }}>
-                {resultData.won ? "VICTORY" : "DEFEAT"}
+            <div style={{ textAlign: "center", padding: 20 }}>
+              <div style={{
+                font: "700 24px var(--font-display)",
+                color: resultData.won ? "var(--gold)" : "var(--muted)",
+                marginBottom: 8,
+              }}>
+                {resultData.won ? "VICTORY" : "DEFEAT"} — +{resultData.xp} XP
               </div>
-              <div style={{ font: "700 32px var(--font-display)", color: resultData.won ? "var(--gold)" : "var(--muted)", marginBottom: 8 }}>
-                +{resultData.xp} XP
-              </div>
-              <div style={{ fontSize: 13, color: "var(--muted)", marginBottom: 8 }}>
-                Rank: <strong style={{ color: "var(--gold)" }}>{resultData.rank}</strong>
-              </div>
-              {resultData.newAchievements?.length > 0 && (
-                <div style={{ marginTop: 12, padding: "10px 16px", background: "rgba(255,215,0,0.07)", borderRadius: 12, border: "1px solid rgba(255,215,0,0.2)" }}>
-                  <span style={{ fontSize: 13, color: "var(--gold)" }}>
-                    New achievements: {resultData.newAchievements.join(", ")}
-                  </span>
-                </div>
-              )}
-              <button
-                className="button"
-                style={{ marginTop: 16 }}
-                onClick={() => r.push(`/debate/${debateId}/results`)}
-              >
+              <button className="button" onClick={() => r.push(`/debate/${debateId}/results`)}>
                 See full results
               </button>
             </div>
-          ) : aiResponse ? (
-            <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 20 }}>
+          ) : roundOver ? (
+            <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
               {round < 3 ? (
                 <button className="button" onClick={handleNextRound}>
                   Next round &rarr;
                 </button>
               ) : (
-                <button className="button" onClick={completeDebate} disabled={completed}>
-                  {completed ? "Completed!" : "End debate & see results"}
+                <button className="button" onClick={completeDebate}>
+                  End debate
                 </button>
               )}
             </div>
-          ) : null}
-        </section>
-      )}
+          ) : (
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+              <textarea
+                ref={inputRef}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={handleKeyDown}
+                maxLength={700}
+                placeholder={`Round ${round}: ${round === 1 ? "Opening statement..." : round === 2 ? "Rebuttal..." : "Closing argument..."}`}
+                rows={1}
+                style={{
+                  flex: 1, resize: "none", background: "#0c0d10", border: "1px solid var(--line)",
+                  borderRadius: 14, padding: "10px 14px", color: "white", fontSize: 14,
+                  outline: "none", fontFamily: "var(--font-body), Arial, sans-serif",
+                  maxHeight: 120, minHeight: 42,
+                }}
+                onFocus={(e) => {
+                  e.currentTarget.style.borderColor = "var(--red-light)";
+                }}
+                onBlur={(e) => {
+                  e.currentTarget.style.borderColor = "var(--line)";
+                }}
+              />
+              <button
+                onClick={handleSend}
+                disabled={!input.trim() || sending}
+                style={{
+                  width: 42, height: 42, borderRadius: 12,
+                  background: input.trim() ? "var(--red-light)" : "#1a1c22",
+                  border: "none", color: input.trim() ? "white" : "var(--muted)",
+                  cursor: input.trim() ? "pointer" : "not-allowed",
+                  display: "grid", placeItems: "center", flexShrink: 0,
+                  transition: "all 0.15s ease",
+                }}
+              >
+                <Send size={18} />
+              </button>
+            </div>
+          )}
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6, textAlign: "center", fontWeight: 700 }}>
+            {input.length}/700 &middot; Enter to send, Shift+Enter for new line
+          </div>
+        </div>
+      </div>
     </AppShell>
   );
 }
 
-function getLocalFallback(personaName: string, round: number): string {
-  const fallbacks: Record<string, string[]> = {
-    "Alex": [
-      "That's an interesting point, but I think there's more to consider here. My gut tells me the other side has some valid concerns too.",
-      "Hmm, you make a good case. But I've been thinking about this and I feel like there are practical implications you're missing.",
-      "I'll admit, that's a strong argument. But I still believe my position holds up when you look at the bigger picture.",
-    ],
-    "Dr. Vex": [
-      "Hard disagree. That argument sounds good on paper but falls apart when you actually think about it.",
-      "That's exactly what everyone says, and it's exactly why everyone is wrong. Let me explain.",
-      "Sure, if you ignore half the evidence. But when you look at the full picture, your argument crumbles.",
-    ],
-    "Prof. Hartley": [
-      "While that perspective has some merit, the empirical evidence actually suggests a more nuanced conclusion.",
-      "I appreciate the logical framework, but your premises need examination. The data doesn't support the causal link you're implying.",
-      "Your argument relies on an appeal to common intuition, but rigorous analysis reveals significant flaws.",
-    ],
-    "Morgan": [
-      "I'm going to challenge that directly. Your argument assumes something that isn't proven.",
-      "You're making this too easy. The moment you examine your core assumption, your entire position collapses.",
-      "Let me play devil's advocate — your argument has a fundamental flaw you haven't addressed.",
-    ],
-    "Luna": [
-      "That reminds me of a story. There was once a person who believed exactly what you're saying — until reality proved them wrong.",
-      "Your argument is logical, but let me paint you a picture. Imagine your position taken to its extreme.",
-      "Numbers and facts are important, but stories are what change minds.",
-    ],
-    "Socrates": [
-      "Before we continue, I need to ask: what do you mean by that? Your argument hinges on a definition you haven't examined.",
-      "You've built a compelling case, but you've overlooked something fundamental.",
-      "The strength of your argument depends entirely on an assumption you haven't questioned.",
-    ],
-    "Ada": [
-      "Let me cross-examine that claim. You said one thing but your evidence says another.",
-      "I'm going to press you on that point. You made an assertion without evidence.",
-      "Your argument has a critical weakness — you've conflated correlation with causation.",
-    ],
-    "Nova": [
-      "I see the merit in your position, and I want to acknowledge that. But there's a more balanced perspective.",
-      "You've raised valid concerns. Rather than dismiss them, let me suggest a framing that addresses both sides.",
-      "The truth usually lies in the middle. Your argument captures part of the picture, but misses the other half.",
-    ],
-  };
-  const pool = fallbacks[personaName] || fallbacks["Alex"];
-  const idx = (round - 1) % pool.length;
-  return pool[idx];
+function ChatBubble({ msg, isOwn }: { msg: ChatMessage; isOwn: boolean }) {
+  if (msg.sender === "system") {
+    return (
+      <div style={{ textAlign: "center", padding: "4px 0" }}>
+        <span style={{
+          fontSize: 11, color: "var(--muted)", fontWeight: 700,
+          background: "#1a1c22", padding: "4px 12px", borderRadius: 10,
+        }}>
+          {msg.content}
+        </span>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{
+      display: "flex", gap: 8, alignItems: "flex-end",
+      flexDirection: isOwn ? "row-reverse" : "row",
+      paddingLeft: isOwn ? 40 : 4,
+      paddingRight: isOwn ? 4 : 40,
+    }}>
+      {!isOwn && (
+        <div style={{
+          width: 28, height: 28, borderRadius: 8,
+          background: `${msg.color}22`, color: msg.color,
+          display: "grid", placeItems: "center",
+          fontWeight: 900, fontSize: 11, flexShrink: 0,
+        }}>
+          {msg.avatar}
+        </div>
+      )}
+
+      <div>
+        {!isOwn && (
+          <div style={{
+            fontSize: 11, fontWeight: 800, color: msg.color,
+            marginBottom: 2, paddingLeft: 2,
+          }}>
+            {msg.name}
+          </div>
+        )}
+        <div style={{
+          padding: "10px 14px", borderRadius: 14,
+          borderTopLeftRadius: isOwn ? 14 : 4,
+          borderTopRightRadius: isOwn ? 4 : 14,
+          background: isOwn ? "var(--red-light)" : "#1a1c22",
+          color: isOwn ? "white" : "#d7d9dd",
+          fontSize: 14, lineHeight: 1.5,
+          wordBreak: "break-word",
+        }}>
+          {msg.content}
+        </div>
+        <div style={{
+          fontSize: 10, color: "var(--muted)", marginTop: 2,
+          textAlign: isOwn ? "right" : "left", paddingLeft: 2, paddingRight: 2,
+        }}>
+          R{msg.round} &middot; {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+        </div>
+      </div>
+    </div>
+  );
 }
