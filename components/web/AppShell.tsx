@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { Trophy, LayoutDashboard, Swords, Users, Wallet, UserRound, LogOut } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
+import { NotificationBell } from "./NotificationBell";
 
 const links = [
   ["Dashboard", "/dashboard", LayoutDashboard],
@@ -39,9 +40,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </Link>
           ))}
         </nav>
-        <button className="side-link sign-out-btn" onClick={handleSignOut}>
-          <LogOut size={18} />Sign out
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <NotificationBell />
+          <button className="side-link sign-out-btn" onClick={handleSignOut} style={{ flex: 1 }}>
+            <LogOut size={18} />Sign out
+          </button>
+        </div>
       </aside>
       <main className="main">{children}</main>
     </div>
