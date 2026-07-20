@@ -4,6 +4,6 @@ import { createAuthClient } from "better-auth/react";
 import { dashClient, sentinelClient } from "@better-auth/infra/client";
 
 export const authClient = createAuthClient({
-  baseURL: "http://localhost:3000",
+  baseURL: process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
   plugins: [dashClient(), sentinelClient()],
 });
