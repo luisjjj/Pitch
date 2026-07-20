@@ -20,12 +20,23 @@ interface Debate {
   opponent_type: string;
 }
 
+interface DebateArgument {
+  id: string;
+  debate_id: string;
+  user_id: string;
+  content: string;
+  audio_url: string | null;
+  round: number;
+  side: string;
+}
+
+const ROUND_TIME = 180; // 3 minutes in seconds
+
 export default function DebateRoom() {
   const [text, setText] = useState("");
   const [debate, setDebate] = useState<Debate | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [transcribeProgress, setTranscribeProgress] = useState("");
   const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
@@ -35,18 +46,25 @@ export default function DebateRoom() {
   const [round, setRound] = useState(1);
   const [completed, setCompleted] = useState(false);
   const [resultData, setResultData] = useState<any>(null);
+  const [timeLeft, setTimeLeft] = useState(ROUND_TIME);
+  const [arguments_, setArguments] = useState<DebateArgument[]>([]);
   const r = useRouter();
   const params = useParams();
   const debateId = params.id as string;
   const transcriberRef = useRef<any>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   const persona = debate?.persona_id ? getPersonaById(debate.persona_id) : null;
 
+  // Load debate + existing arguments
   useEffect(() => {
     async function load() {
       try {
         const res = await fetch(`/api/debates/${debateId}`);
-        if (res.ok) setDebate(await res.json());
+        if (res.ok) {
+          const data = await res.json();
+          setDebate(data.debate || data);
+        }
       } catch {
         // debate not found
       } finally {
@@ -55,6 +73,70 @@ export default function DebateRoom() {
     }
     load();
   }, [debateId]);
+
+  // Load existing arguments for this debate
+  useEffect(() => {
+    if (!debate) return;
+    async function loadArgs() {
+      try {
+        const res = await fetch(`/api/debates/${debateId}/arguments?all=true`);
+        if (res.ok) {
+          const data = await res.json();
+          const args = data.arguments || data || [];
+          setArguments(args);
+
+          // Restore state from DB
+          const myArgs = args.filter((a: DebateArgument) => a.user_id === debate!.created_by);
+          const aiArgs = args.filter((a: DebateArgument) => a.user_id.startsWith("ai-"));
+
+          const maxRound = Math.max(...args.map((a: DebateArgument) => a.round), 0);
+          setRound(maxRound || 1);
+
+          // If we have our args for current round, mark as submitted
+          const currentMyArg = myArgs.find((a: DebateArgument) => a.round === maxRound);
+          const currentAiArg = aiArgs.find((a: DebateArgument) => a.round === maxRound);
+
+          if (currentMyArg && currentMyArg.content && currentMyArg.content.trim() !== "") {
+            setText(currentMyArg.content);
+          }
+          if (currentAiArg && currentAiArg.content) {
+            setAiResponse(currentAiArg.content);
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+    loadArgs();
+  }, [debate, debateId]);
+
+  // Countdown timer
+  useEffect(() => {
+    if (loading || completed) return;
+    timerRef.current = setInterval(() => {
+      setTimeLeft((t) => {
+        if (t <= 1) {
+          if (timerRef.current) clearInterval(timerRef.current);
+          return 0;
+        }
+        return t - 1;
+      });
+    }, 1000);
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [loading, completed, round]);
+
+  // Reset timer on round change
+  useEffect(() => {
+    setTimeLeft(ROUND_TIME);
+  }, [round]);
+
+  const formatTime = (s: number) => {
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  };
 
   const handleAudioComplete = useCallback((blob: Blob, duration: number) => {
     setAudioBlob(blob);
@@ -101,6 +183,7 @@ export default function DebateRoom() {
   const generateAIResponse = useCallback(async (userArgument: string) => {
     if (!debate || !persona) return;
     setAiThinking(true);
+    setAiResponse(null);
     try {
       const res = await fetch(`/api/debates/${debateId}/ai-respond`, {
         method: "POST",
@@ -116,9 +199,13 @@ export default function DebateRoom() {
       if (res.ok) {
         const data = await res.json();
         setAiResponse(data.content);
+      } else {
+        // If API fails, use a fallback response
+        setAiResponse(getLocalFallback(persona.name, round));
       }
     } catch (err) {
       console.error("AI response failed:", err);
+      setAiResponse(getLocalFallback(persona.name, round));
     } finally {
       setAiThinking(false);
     }
@@ -144,12 +231,18 @@ export default function DebateRoom() {
         content = transcription || text;
       }
 
+      if (!content || !content.trim()) {
+        alert("Please write your argument before submitting.");
+        setSubmitting(false);
+        return;
+      }
+
       // Save user argument
       const res = await fetch(`/api/debates/${debateId}/arguments`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          content: content || undefined,
+          content,
           audioUrl: audioUrl || undefined,
           audioDuration: audioDuration || undefined,
           transcription: transcription || undefined,
@@ -158,8 +251,6 @@ export default function DebateRoom() {
         }),
       });
       if (!res.ok) throw new Error("Failed to submit argument");
-
-      setSubmitted(true);
 
       // If AI opponent, generate response
       if (debate.opponent_type === "ai" && persona) {
@@ -174,8 +265,23 @@ export default function DebateRoom() {
     }
   }, [debate, text, audioBlob, audioDuration, debateId, round, persona, transcribeAudio, generateAIResponse]);
 
+  const handleNextRound = useCallback(() => {
+    setRound((r) => r + 1);
+    setAiResponse(null);
+    setText("");
+    setAudioBlob(null);
+    setTimeLeft(ROUND_TIME);
+  }, []);
+
   const isAudio = debate?.format === "Audio";
   const canSubmit = isAudio ? !!audioBlob : !!text.trim();
+  const userSubmitted = arguments_.some(
+    (a) => a.user_id === debate?.created_by && a.round === round && a.content && a.content.trim() !== ""
+  );
+  const aiSubmitted = arguments_.some(
+    (a) => a.user_id.startsWith("ai-") && a.round === round && a.content
+  );
+  const bothDone = userSubmitted && (aiSubmitted || debate?.opponent_type !== "ai");
 
   if (loading) {
     return (
@@ -195,33 +301,35 @@ export default function DebateRoom() {
           <div className="eyebrow">Round {round} of 3</div>
           <strong>{debate?.topic || `Debate #${debateId}`}</strong>
         </div>
-        <div className="timer">03:00</div>
+        <div className="timer" style={{ color: timeLeft < 30 ? "var(--red-light)" : "var(--gold)" }}>
+          {formatTime(timeLeft)}
+        </div>
       </div>
 
       <div className="room-grid">
         {/* User card */}
-        <article className={`card fighter ${!submitted ? "active" : ""}`}>
+        <article className={`card fighter ${!userSubmitted ? "active" : ""}`}>
           <div className="fighter-head">
             <div style={{ display: "flex", gap: 11, alignItems: "center" }}>
               <div className="avatar">Y</div>
               <div>
                 <strong>You</strong>
                 <div className="eyebrow">
-                  {debate?.format === "Audio" ? "AUDIO" : "TEXT"} &middot; YOUR TURN
+                  {debate?.format === "Audio" ? "AUDIO" : "TEXT"} &middot; {userSubmitted ? "DONE" : "YOUR TURN"}
                 </div>
               </div>
             </div>
-            <span className="tag">{submitted ? "DONE" : "ACTIVE"}</span>
+            <span className="tag">{userSubmitted ? "DONE" : "ACTIVE"}</span>
           </div>
           <div className="argument">
-            {submitted
-              ? "Your argument has been submitted."
+            {userSubmitted
+              ? (text || arguments_.find((a) => a.user_id === debate?.created_by && a.round === round)?.content || "Your argument has been submitted.")
               : "Make your opening case. The most convincing argument takes the round."}
           </div>
         </article>
 
         {/* Opponent card */}
-        <article className={`card fighter ${aiThinking || (!submitted && !aiResponse) ? "muted" : ""}`}>
+        <article className={`card fighter ${aiThinking || (!userSubmitted && !aiResponse) ? "muted" : ""}`}>
           <div className="fighter-head">
             <div style={{ display: "flex", gap: 11, alignItems: "center" }}>
               {persona ? (
@@ -270,10 +378,10 @@ export default function DebateRoom() {
       </div>
 
       {/* Input area */}
-      {!submitted ? (
+      {!userSubmitted ? (
         <section className="card editor">
           <div className="eyebrow">
-            Your opening statement {isAudio ? "(audio)" : "(text)"}
+            Your {round === 1 ? "opening" : round === 2 ? "rebuttal" : "closing"} statement {isAudio ? "(audio)" : "(text)"}
           </div>
 
           {isAudio ? (
@@ -354,16 +462,7 @@ export default function DebateRoom() {
           ) : aiResponse ? (
             <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 20 }}>
               {round < 3 ? (
-                <button
-                  className="button"
-                  onClick={() => {
-                    setRound((r) => r + 1);
-                    setSubmitted(false);
-                    setAiResponse(null);
-                    setText("");
-                    setAudioBlob(null);
-                  }}
-                >
+                <button className="button" onClick={handleNextRound}>
                   Next round &rarr;
                 </button>
               ) : (
@@ -377,4 +476,52 @@ export default function DebateRoom() {
       )}
     </AppShell>
   );
+}
+
+function getLocalFallback(personaName: string, round: number): string {
+  const fallbacks: Record<string, string[]> = {
+    "Alex": [
+      "That's an interesting point, but I think there's more to consider here. My gut tells me the other side has some valid concerns too.",
+      "Hmm, you make a good case. But I've been thinking about this and I feel like there are practical implications you're missing.",
+      "I'll admit, that's a strong argument. But I still believe my position holds up when you look at the bigger picture.",
+    ],
+    "Dr. Vex": [
+      "Hard disagree. That argument sounds good on paper but falls apart when you actually think about it.",
+      "That's exactly what everyone says, and it's exactly why everyone is wrong. Let me explain.",
+      "Sure, if you ignore half the evidence. But when you look at the full picture, your argument crumbles.",
+    ],
+    "Prof. Hartley": [
+      "While that perspective has some merit, the empirical evidence actually suggests a more nuanced conclusion.",
+      "I appreciate the logical framework, but your premises need examination. The data doesn't support the causal link you're implying.",
+      "Your argument relies on an appeal to common intuition, but rigorous analysis reveals significant flaws.",
+    ],
+    "Morgan": [
+      "I'm going to challenge that directly. Your argument assumes something that isn't proven.",
+      "You're making this too easy. The moment you examine your core assumption, your entire position collapses.",
+      "Let me play devil's advocate — your argument has a fundamental flaw you haven't addressed.",
+    ],
+    "Luna": [
+      "That reminds me of a story. There was once a person who believed exactly what you're saying — until reality proved them wrong.",
+      "Your argument is logical, but let me paint you a picture. Imagine your position taken to its extreme.",
+      "Numbers and facts are important, but stories are what change minds.",
+    ],
+    "Socrates": [
+      "Before we continue, I need to ask: what do you mean by that? Your argument hinges on a definition you haven't examined.",
+      "You've built a compelling case, but you've overlooked something fundamental.",
+      "The strength of your argument depends entirely on an assumption you haven't questioned.",
+    ],
+    "Ada": [
+      "Let me cross-examine that claim. You said one thing but your evidence says another.",
+      "I'm going to press you on that point. You made an assertion without evidence.",
+      "Your argument has a critical weakness — you've conflated correlation with causation.",
+    ],
+    "Nova": [
+      "I see the merit in your position, and I want to acknowledge that. But there's a more balanced perspective.",
+      "You've raised valid concerns. Rather than dismiss them, let me suggest a framing that addresses both sides.",
+      "The truth usually lies in the middle. Your argument captures part of the picture, but misses the other half.",
+    ],
+  };
+  const pool = fallbacks[personaName] || fallbacks["Alex"];
+  const idx = (round - 1) % pool.length;
+  return pool[idx];
 }
