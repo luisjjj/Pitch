@@ -19,7 +19,7 @@ export async function createDebate(formData: {
 
   const result = await pool.query(
     `INSERT INTO debates (topic, category, format, status, created_by, persona_id, opponent_type)
-     VALUES ($1, $2, $3, 'pending', $4, $5, $6)
+     VALUES ($1, $2, $3, 'active', $4, $5, $6)
      RETURNING id`,
     [formData.topic, formData.category, formData.format, session.user.id, formData.personaId || null, opponentType]
   );
@@ -39,50 +39,57 @@ export async function getActiveDebates() {
   const session = await auth.api.getSession({ headers: headers() });
   if (!session) return [];
 
-  const result = await pool.query(
-    `SELECT d.*, u.name as opponent_name
-     FROM debates d
-     LEFT JOIN "user" u ON u.id = d.opponent_id
-     WHERE d.created_by = $1 AND d.status IN ('pending', 'active')
-     ORDER BY d.created_at DESC
-     LIMIT 10`,
-    [session.user.id]
-  );
-
-  return result.rows;
+  try {
+    const result = await pool.query(
+      `SELECT d.*, u.name as opponent_name
+       FROM debates d
+       LEFT JOIN "user" u ON u.id = d.opponent_id
+       WHERE d.created_by = $1 AND d.status IN ('pending', 'active')
+       ORDER BY d.created_at DESC
+       LIMIT 10`,
+      [session.user.id]
+    );
+    return result.rows;
+  } catch {
+    return [];
+  }
 }
 
 export async function getDebateStats() {
   const session = await auth.api.getSession({ headers: headers() });
-  if (!session) return { total: 0, wins: 0, losses: 0, points: 0 };
+  if (!session) return { total: 0, wins: 0, losses: 0, points: 0, winRate: 0 };
 
-  const total = await pool.query(
-    `SELECT COUNT(*) FROM debates WHERE created_by = $1 AND status = 'completed'`,
-    [session.user.id]
-  );
+  try {
+    const total = await pool.query(
+      `SELECT COUNT(*) FROM debates WHERE created_by = $1 AND status = 'completed'`,
+      [session.user.id]
+    );
 
-  const wins = await pool.query(
-    `SELECT COUNT(*) FROM debate_results WHERE winner_id = $1`,
-    [session.user.id]
-  );
+    const wins = await pool.query(
+      `SELECT COUNT(*) FROM debate_results WHERE winner_id = $1`,
+      [session.user.id]
+    );
 
-  const losses = await pool.query(
-    `SELECT COUNT(*) FROM debate_results dr
-     JOIN debates d ON d.id = dr.debate_id
-     WHERE d.created_by = $1 AND dr.winner_id != $1 AND dr.winner_id IS NOT NULL`,
-    [session.user.id]
-  );
+    const losses = await pool.query(
+      `SELECT COUNT(*) FROM debate_results dr
+       JOIN debates d ON d.id = dr.debate_id
+       WHERE d.created_by = $1 AND dr.winner_id != $1 AND dr.winner_id IS NOT NULL`,
+      [session.user.id]
+    );
 
-  const totalDebates = parseInt(total.rows[0].count);
-  const totalWins = parseInt(wins.rows[0].count);
-  const totalLosses = parseInt(losses.rows[0].count);
-  const points = totalWins * 100 + totalDebates * 10;
+    const totalDebates = parseInt(total.rows[0].count);
+    const totalWins = parseInt(wins.rows[0].count);
+    const totalLosses = parseInt(losses.rows[0].count);
+    const points = totalWins * 100 + totalDebates * 10;
 
-  return {
-    total: totalDebates,
-    wins: totalWins,
-    losses: totalLosses,
-    winRate: totalDebates > 0 ? Math.round((totalWins / totalDebates) * 100) : 0,
-    points,
-  };
+    return {
+      total: totalDebates,
+      wins: totalWins,
+      losses: totalLosses,
+      winRate: totalDebates > 0 ? Math.round((totalWins / totalDebates) * 100) : 0,
+      points,
+    };
+  } catch {
+    return { total: 0, wins: 0, losses: 0, points: 0, winRate: 0 };
+  }
 }

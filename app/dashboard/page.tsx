@@ -18,46 +18,58 @@ export default async function Dashboard() {
   let userStreak = 0;
 
   if (session) {
-    const historyResult = await pool.query(
-      `SELECT d.*,
-        u.name as opponent_user_name,
-        (SELECT content FROM debate_arguments da WHERE da.debate_id = d.id AND da.user_id = d.created_by ORDER BY da.round ASC LIMIT 1) as user_first_argument,
-        (SELECT COUNT(*) FROM debate_arguments da WHERE da.debate_id = d.id) as argument_count
-       FROM debates d
-       LEFT JOIN users u ON d.opponent_id = u.id
-       WHERE d.created_by = $1 AND d.status = 'completed'
-       ORDER BY d.created_at DESC
-       LIMIT 5`,
-      [session.user.id]
-    );
-    history = historyResult.rows;
+    try {
+      const historyResult = await pool.query(
+        `SELECT d.*,
+          u.name as opponent_user_name,
+          (SELECT content FROM debate_arguments da WHERE da.debate_id = d.id AND da.user_id = d.created_by ORDER BY da.round ASC LIMIT 1) as user_first_argument,
+          (SELECT COUNT(*) FROM debate_arguments da WHERE da.debate_id = d.id) as argument_count
+         FROM debates d
+         LEFT JOIN "user" u ON d.opponent_id = u.id
+         WHERE d.created_by = $1 AND d.status = 'completed'
+         ORDER BY d.created_at DESC
+         LIMIT 5`,
+        [session.user.id]
+      );
+      history = historyResult.rows;
+    } catch {
+      // fallback — column may not exist yet
+    }
 
-    const statsResult = await pool.query(
-      `SELECT
-        COUNT(*) as total_debates,
-        COUNT(*) FILTER (WHERE winner_id = $1) as wins,
-        COUNT(*) FILTER (WHERE winner_id != $1 AND winner_id IS NOT NULL) as losses,
-        COUNT(DISTINCT persona_id) as personas_faced
-       FROM debates
-       WHERE created_by = $1 AND status = 'completed'`,
-      [session.user.id]
-    );
-    const s = statsResult.rows[0];
-    userStats = {
-      totalDebates: parseInt(s.total_debates) || 0,
-      wins: parseInt(s.wins) || 0,
-      losses: parseInt(s.losses) || 0,
-      personasFaced: parseInt(s.personas_faced) || 0,
-    };
+    try {
+      const statsResult = await pool.query(
+        `SELECT
+          COUNT(*) as total_debates,
+          COUNT(*) FILTER (WHERE winner_id = $1) as wins,
+          COUNT(*) FILTER (WHERE winner_id != $1 AND winner_id IS NOT NULL) as losses,
+          COUNT(DISTINCT persona_id) as personas_faced
+         FROM debates
+         WHERE created_by = $1 AND status = 'completed'`,
+        [session.user.id]
+      );
+      const s = statsResult.rows[0];
+      userStats = {
+        totalDebates: parseInt(s.total_debates) || 0,
+        wins: parseInt(s.wins) || 0,
+        losses: parseInt(s.losses) || 0,
+        personasFaced: parseInt(s.personas_faced) || 0,
+      };
+    } catch {
+      // fallback to existing stats
+    }
 
-    const userResult = await pool.query(
-      `SELECT xp, rank, current_streak FROM "user" WHERE id = $1`,
-      [session.user.id]
-    );
-    if (userResult.rows.length > 0) {
-      userXP = userResult.rows[0].xp || 0;
-      userRank = userResult.rows[0].rank || "Bronze";
-      userStreak = userResult.rows[0].current_streak || 0;
+    try {
+      const userResult = await pool.query(
+        `SELECT xp, rank, current_streak FROM "user" WHERE id = $1`,
+        [session.user.id]
+      );
+      if (userResult.rows.length > 0) {
+        userXP = userResult.rows[0].xp || 0;
+        userRank = userResult.rows[0].rank || "Bronze";
+        userStreak = userResult.rows[0].current_streak || 0;
+      }
+    } catch {
+      // migration 005 not yet applied — columns don't exist
     }
   }
 
