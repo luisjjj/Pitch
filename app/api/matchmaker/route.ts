@@ -34,17 +34,16 @@ export async function POST(request: NextRequest) {
     const opponent = match.rows[0];
 
     // Remove both from queue
+    // First get our own queue entry (we deleted our expired entries above, so re-insert then delete)
+    const myEntry = await pool.query(
+      `INSERT INTO matchmaker (user_id, category) VALUES ($1, $2) RETURNING id`,
+      [session.user.id, category || "General"]
+    );
+    const myId = myEntry.rows[0].id;
+
     await pool.query(
       `DELETE FROM matchmaker WHERE id IN ($1, $2)`,
-      [opponent.id, opponent.id] // will be replaced below
-    );
-    await pool.query(
-      `UPDATE matchmaker SET status = 'matched' WHERE user_id = $1 AND status = 'waiting'`,
-      [opponent.user_id]
-    );
-    await pool.query(
-      `UPDATE matchmaker SET status = 'matched' WHERE user_id = $1 AND status = 'waiting'`,
-      [session.user.id]
+      [opponent.id, myId]
     );
 
     // Create debate — challenger goes first (FOR), opponent goes AGAINST

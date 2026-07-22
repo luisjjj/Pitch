@@ -25,6 +25,18 @@ export async function POST(
 
   const debate = debateResult.rows[0];
 
+  // Idempotency: if already completed, return existing result
+  if (debate.status === "completed") {
+    const existing = await pool.query(
+      `SELECT * FROM debate_results WHERE debate_id = $1`,
+      [params.id]
+    );
+    if (existing.rows.length > 0) {
+      const r = existing.rows[0];
+      return NextResponse.json({ won: r.winner_id === session.user.id, xp: 0, rank: debate.status || "Bronze", newAchievements: [], totalXP: 0 });
+    }
+  }
+
   // Get all arguments
   const argsResult = await pool.query(
     `SELECT * FROM debate_arguments WHERE debate_id = $1 ORDER BY round ASC`,
@@ -39,7 +51,8 @@ export async function POST(
 
   const won = userArgs.length >= aiArgs.length;
   const persona = debate.persona_id ? getPersonaById(debate.persona_id) : null;
-  const winnerId = won ? session.user.id : (aiArgs.length > 0 ? aiArgs[0].user_id : null);
+  // For FK safety: winner_id references "user" table, so only set if human won
+  const winnerId = won ? session.user.id : null;
 
   // Update debate status
   try {
@@ -61,20 +74,23 @@ export async function POST(
   const userAvgScore = Math.min(100, 50 + userArgs.length * 8 + (won ? 15 : 0));
   const aiAvgScore = Math.min(100, 50 + aiArgs.length * 8 + (won ? 0 : 15));
 
+  // Use deterministic scores (not random) so results are stable across refetches
+  const seed = params.id.charCodeAt(0) % 10;
+
   scores[session.user.id] = {
-    logic: Math.round(userAvgScore + (Math.random() * 10 - 5)),
-    clarity: Math.round(userAvgScore + (Math.random() * 10 - 5)),
-    relevance: Math.round(userAvgScore + (Math.random() * 10 - 5)),
-    persuasion: Math.round(userAvgScore + (Math.random() * 10 - 5)),
+    logic: Math.round(userAvgScore + (seed - 5)),
+    clarity: Math.round(userAvgScore + ((seed * 3) % 10 - 5)),
+    relevance: Math.round(userAvgScore + ((seed * 7) % 10 - 5)),
+    persuasion: Math.round(userAvgScore + ((seed * 2) % 10 - 5)),
     total: userAvgScore,
   };
 
   const aiUserId = aiArgs.length > 0 ? aiArgs[0].user_id : `ai-${persona?.id || "unknown"}`;
   scores[aiUserId] = {
-    logic: Math.round(aiAvgScore + (Math.random() * 10 - 5)),
-    clarity: Math.round(aiAvgScore + (Math.random() * 10 - 5)),
-    relevance: Math.round(aiAvgScore + (Math.random() * 10 - 5)),
-    persuasion: Math.round(aiAvgScore + (Math.random() * 10 - 5)),
+    logic: Math.round(aiAvgScore + (seed - 5)),
+    clarity: Math.round(aiAvgScore + ((seed * 3) % 10 - 5)),
+    relevance: Math.round(aiAvgScore + ((seed * 7) % 10 - 5)),
+    persuasion: Math.round(aiAvgScore + ((seed * 2) % 10 - 5)),
     total: aiAvgScore,
   };
 

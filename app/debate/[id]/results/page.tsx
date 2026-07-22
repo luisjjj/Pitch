@@ -227,6 +227,46 @@ export default function Results() {
           </div>
         )}
 
+        {/* Score breakdown */}
+        {userScore && (
+          <div className="card" style={{ marginTop: 16, padding: 20 }}>
+            <div className="eyebrow" style={{ marginBottom: 12 }}>Score Breakdown</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              {/* User scores */}
+              <div style={{ padding: "14px 16px", background: "#0c0d10", borderRadius: 12 }}>
+                <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 10, color: "var(--red-light)" }}>You</div>
+                {["logic", "clarity", "relevance", "persuasion"].map((key) => (
+                  <div key={key} style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                    <span style={{ fontSize: 12, color: "var(--muted)", textTransform: "capitalize" }}>{key}</span>
+                    <span style={{ fontSize: 13, fontWeight: 800 }}>{userScore[key] ?? "—"}</span>
+                  </div>
+                ))}
+                <div style={{ borderTop: "1px solid var(--line)", marginTop: 8, paddingTop: 8, display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ fontSize: 13, fontWeight: 900 }}>Total</span>
+                  <span style={{ fontSize: 15, fontWeight: 900, color: "var(--gold)" }}>{userScore.total ?? "—"}</span>
+                </div>
+              </div>
+
+              {/* AI scores */}
+              {aiScore && (
+                <div style={{ padding: "14px 16px", background: "#0c0d10", borderRadius: 12 }}>
+                  <div style={{ fontWeight: 800, fontSize: 13, marginBottom: 10, color: "#4768aa" }}>{opponentName}</div>
+                  {["logic", "clarity", "relevance", "persuasion"].map((key) => (
+                    <div key={key} style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                      <span style={{ fontSize: 12, color: "var(--muted)", textTransform: "capitalize" }}>{key}</span>
+                      <span style={{ fontSize: 13, fontWeight: 800 }}>{aiScore[key] ?? "—"}</span>
+                    </div>
+                  ))}
+                  <div style={{ borderTop: "1px solid var(--line)", marginTop: 8, paddingTop: 8, display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ fontSize: 13, fontWeight: 900 }}>Total</span>
+                    <span style={{ fontSize: 15, fontWeight: 900, color: "#4768aa" }}>{aiScore.total ?? "—"}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Actions */}
         <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 32 }}>
           <Link className="button" href="/debate/new">New debate</Link>

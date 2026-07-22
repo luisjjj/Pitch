@@ -1,16 +1,16 @@
 import Link from "next/link";
 import { AppShell } from "@/components/web/AppShell";
 import { FireIcon } from "@/components/web/Icons";
-import { getActiveDebates, getDebateStats } from "@/app/debate/new/actions";
+import { getActiveDebates } from "@/app/debate/new/actions";
 import { auth } from "@/lib/auth";
 import { pool } from "@/lib/db";
 import { headers } from "next/headers";
+import { getPersonaById } from "@/lib/personas";
 
 export default async function Dashboard() {
   const session = await auth.api.getSession({ headers: headers() });
-  const [debates, stats] = await Promise.all([getActiveDebates(), getDebateStats()]);
+  const debates = await getActiveDebates();
 
-  // Fetch recent history and user stats
   let history: any[] = [];
   let userStats = { totalDebates: 0, wins: 0, losses: 0, personasFaced: 0 };
   let userXP = 0;
@@ -24,16 +24,17 @@ export default async function Dashboard() {
           u.name as opponent_user_name,
           (SELECT COUNT(*) FROM debate_arguments da WHERE da.debate_id = d.id) as argument_count
          FROM debates d
-         LEFT JOIN "user" u ON (d.opponent_id = u.id OR d.created_by = u.id AND u.id != $1)
+         LEFT JOIN "user" u ON u.id = CASE
+           WHEN d.opponent_id = $1 THEN d.created_by
+           ELSE d.opponent_id
+         END
          WHERE (d.created_by = $1 OR d.opponent_id = $1) AND d.status = 'completed'
          ORDER BY d.created_at DESC
          LIMIT 10`,
         [session.user.id]
       );
       history = historyResult.rows;
-    } catch {
-      // fallback — column may not exist yet
-    }
+    } catch {}
 
     try {
       const statsResult = await pool.query(
@@ -53,9 +54,7 @@ export default async function Dashboard() {
         losses: parseInt(s.losses) || 0,
         personasFaced: parseInt(s.personas_faced) || 0,
       };
-    } catch {
-      // fallback to existing stats
-    }
+    } catch {}
 
     try {
       const userResult = await pool.query(
@@ -67,9 +66,7 @@ export default async function Dashboard() {
         userRank = userResult.rows[0].rank || "Bronze";
         userStreak = userResult.rows[0].current_streak || 0;
       }
-    } catch {
-      // migration 005 not yet applied — columns don't exist
-    }
+    } catch {}
   }
 
   return (
@@ -133,15 +130,20 @@ export default async function Dashboard() {
             }
           </p>
           <div style={{ display: "flex", gap: 7, marginTop: 24 }}>
-            {["M", "T", "W", "T", "F", "S", "S"].map((x, i) => (
-              <span key={i} style={{
-                display: "grid", placeItems: "center", width: 32, height: 32,
-                borderRadius: 10,
-                background: i < userStreak ? "var(--gold)22" : "#24262c",
-                color: i < userStreak ? "var(--gold)" : "var(--muted)",
-                fontWeight: 900,
-              }}>{x}</span>
-            ))}
+            {["M", "T", "W", "T", "F", "S", "S"].map((x, i) => {
+              const today = new Date().getDay();
+              const dayIndex = (today - 6 + 7) % 7;
+              const isLit = i <= dayIndex && i > dayIndex - userStreak;
+              return (
+                <span key={i} style={{
+                  display: "grid", placeItems: "center", width: 32, height: 32,
+                  borderRadius: 10,
+                  background: isLit ? "rgba(255,200,87,0.15)" : "#24262c",
+                  color: isLit ? "var(--gold)" : "var(--muted)",
+                  fontWeight: 900,
+                }}>{x}</span>
+              );
+            })}
           </div>
         </aside>
       </div>
@@ -237,13 +239,4 @@ function getTimeAgo(date: Date): string {
   if (diffHours < 24) return `${diffHours}h ago`;
   if (diffDays < 7) return `${diffDays}d ago`;
   return date.toLocaleDateString();
-}
-
-function getPersonaById(id: string) {
-  try {
-    const { getPersonaById: getPersona } = require("@/lib/personas");
-    return getPersona(id);
-  } catch {
-    return null;
-  }
 }
