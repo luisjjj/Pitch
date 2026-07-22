@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
-import { Trophy, LayoutDashboard, Swords, Users, Wallet, UserRound, LogOut } from "lucide-react";
+import { Trophy, LayoutDashboard, Swords, Users, Wallet, UserRound, LogOut, Zap } from "lucide-react";
 import { authClient } from "@/lib/auth-client";
 import { NotificationBell } from "./NotificationBell";
 
 const links = [
   ["Dashboard", "/dashboard", LayoutDashboard],
   ["New debate", "/debate/new", Swords],
+  ["Matchmake", "/debate/matchmaking", Zap],
   ["Leaderboard", "/leaderboard", Trophy],
   ["Friends", "/friends", Users],
   ["Rewards", "/wallet", Wallet],

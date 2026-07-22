@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "app/api/debates/[id]/ai-respond/route.ts": {
+      "maxDuration": 30
+    }
+  }
+}

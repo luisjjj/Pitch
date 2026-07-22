@@ -22,13 +22,12 @@ export default async function Dashboard() {
       const historyResult = await pool.query(
         `SELECT d.*,
           u.name as opponent_user_name,
-          (SELECT content FROM debate_arguments da WHERE da.debate_id = d.id AND da.user_id = d.created_by ORDER BY da.round ASC LIMIT 1) as user_first_argument,
           (SELECT COUNT(*) FROM debate_arguments da WHERE da.debate_id = d.id) as argument_count
          FROM debates d
-         LEFT JOIN "user" u ON d.opponent_id = u.id
-         WHERE d.created_by = $1 AND d.status = 'completed'
+         LEFT JOIN "user" u ON (d.opponent_id = u.id OR d.created_by = u.id AND u.id != $1)
+         WHERE (d.created_by = $1 OR d.opponent_id = $1) AND d.status = 'completed'
          ORDER BY d.created_at DESC
-         LIMIT 5`,
+         LIMIT 10`,
         [session.user.id]
       );
       history = historyResult.rows;
@@ -41,10 +40,10 @@ export default async function Dashboard() {
         `SELECT
           COUNT(*) as total_debates,
           COUNT(*) FILTER (WHERE winner_id = $1) as wins,
-          COUNT(*) FILTER (WHERE winner_id != $1 AND winner_id IS NOT NULL) as losses,
+          COUNT(*) FILTER (WHERE winner_id IS NOT NULL AND winner_id != $1) as losses,
           COUNT(DISTINCT persona_id) as personas_faced
          FROM debates
-         WHERE created_by = $1 AND status = 'completed'`,
+         WHERE (created_by = $1 OR opponent_id = $1) AND status = 'completed'`,
         [session.user.id]
       );
       const s = statsResult.rows[0];

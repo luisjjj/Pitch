@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter, useParams } from "next/navigation";
-import { Send, LoaderCircle, ArrowLeft } from "lucide-react";
+import { Send, Mic, MicOff, ChevronLeft } from "lucide-react";
 import { AppShell } from "@/components/web/AppShell";
 import { getPersonaById } from "@/lib/personas";
 
@@ -22,7 +22,6 @@ interface ChatMessage {
   id: string;
   sender: "user" | "ai" | "system";
   name: string;
-  avatar: string;
   color: string;
   content: string;
   round: number;
@@ -30,6 +29,21 @@ interface ChatMessage {
 }
 
 const ROUND_TIME = 180;
+
+const bubbleKeyframes = `
+  @keyframes bubbleIn {
+    from { opacity: 0; transform: scale(0.92) translateY(6px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+  }
+  @keyframes typingDot {
+    0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+    30% { opacity: 1; transform: translateY(-3px); }
+  }
+  @keyframes fadeUp {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+`;
 
 export default function DebateRoom() {
   const [debate, setDebate] = useState<Debate | null>(null);
@@ -42,16 +56,25 @@ export default function DebateRoom() {
   const [completed, setCompleted] = useState(false);
   const [resultData, setResultData] = useState<any>(null);
   const [roundOver, setRoundOver] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [audioBlob, setAudioBlob] = useState<Blob | null>(null);
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const r = useRouter();
   const params = useParams();
   const debateId = params.id as string;
   const chatEndRef = useRef<HTMLDivElement>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const speechRecognitionRef = useRef<any>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
 
   const persona = debate?.persona_id ? getPersonaById(debate.persona_id) : null;
+  const isHumanOpponent = debate?.opponent_type === "human";
+  const myUserId = debate?.created_by; // creator always goes first (FOR)
+  const isMyTurn = !isHumanOpponent || debate?.created_by === myUserId; // simplified
 
-  // Load debate
   useEffect(() => {
     async function load() {
       try {
@@ -64,7 +87,6 @@ export default function DebateRoom() {
     load();
   }, [debateId]);
 
-  // Load existing messages
   useEffect(() => {
     if (!debate) return;
     async function loadMessages() {
@@ -84,7 +106,6 @@ export default function DebateRoom() {
               id: arg.id,
               sender: isUser ? "user" : isAi ? "ai" : "system",
               name: isUser ? "You" : persona?.name || "Opponent",
-              avatar: isUser ? "Y" : persona?.avatar || "?",
               color: isUser ? "var(--red-light)" : persona?.color || "#4768aa",
               content: arg.content,
               round: arg.round,
@@ -97,15 +118,22 @@ export default function DebateRoom() {
           const maxRound = Math.max(...args.map((a: any) => a.round), 1);
           setRound(maxRound);
 
-          // Check if current round is complete (both sides submitted)
           const userInRound = args.find((a: any) => a.user_id === debate!.created_by && a.round === maxRound && a.content?.trim());
-          const aiInRound = args.find((a: any) => a.user_id.startsWith("ai-") && a.round === maxRound);
-          if (userInRound && aiInRound) {
+          const opponentInRound = args.find((a: any) => a.user_id !== debate!.created_by && a.round === maxRound && a.content?.trim());
+
+          if (userInRound && opponentInRound) {
             setRoundOver(true);
-          } else if (userInRound && !aiInRound) {
-            // User submitted but AI hasn't responded yet - trigger AI response
+          } else if (userInRound && !opponentInRound) {
+            if (debate!.opponent_type === "ai" && persona) {
+              setRoundOver(false);
+              triggerAiResponse(userInRound.content, maxRound);
+            } else if (debate!.opponent_type === "human") {
+              // Waiting for human opponent
+              setRoundOver(false);
+              setSending(false);
+            }
+          } else if (!userInRound) {
             setRoundOver(false);
-            triggerAiResponse(userInRound.content, maxRound);
           }
         }
       } catch {}
@@ -113,12 +141,63 @@ export default function DebateRoom() {
     loadMessages();
   }, [debate, debateId]);
 
-  // Auto-scroll to bottom
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // Timer
+  // Poll for opponent's arguments in human debates
+  useEffect(() => {
+    if (!debate || debate.opponent_type !== "human" || completed || roundOver) return;
+
+    const poll = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/debates/${debateId}/arguments?all=true`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const args = data.arguments || data || [];
+
+        const userInRound = args.find((a: any) => a.user_id === debate!.created_by && a.round === round && a.content?.trim());
+        const opponentInRound = args.find((a: any) => a.user_id !== debate!.created_by && a.round === round && a.content?.trim());
+
+        if (userInRound && opponentInRound) {
+          // Both submitted — show opponent's message
+          setMessages((prev) => {
+            const alreadyHas = prev.some(m => m.id === opponentInRound.id);
+            if (alreadyHas) return prev;
+            return [...prev, {
+              id: opponentInRound.id,
+              sender: "ai" as const,
+              name: "Opponent",
+              color: "#4768aa",
+              content: opponentInRound.content,
+              round: round,
+              timestamp: new Date(opponentInRound.created_at || Date.now()),
+            }];
+          });
+          setRoundOver(true);
+          setSending(false);
+        } else if (!userInRound && opponentInRound) {
+          // Opponent submitted but we haven't — show their message, it's our turn
+          setMessages((prev) => {
+            const alreadyHas = prev.some(m => m.id === opponentInRound.id);
+            if (alreadyHas) return prev;
+            return [...prev, {
+              id: opponentInRound.id,
+              sender: "ai" as const,
+              name: "Opponent",
+              color: "#4768aa",
+              content: opponentInRound.content,
+              round: round,
+              timestamp: new Date(opponentInRound.created_at || Date.now()),
+            }];
+          });
+        }
+      } catch {}
+    }, 3000);
+
+    return () => clearInterval(poll);
+  }, [debate, debateId, completed, roundOver, round]);
+
   useEffect(() => {
     if (loading || completed || roundOver) return;
     timerRef.current = setInterval(() => {
@@ -154,7 +233,6 @@ export default function DebateRoom() {
         id: `sys-${Date.now()}`,
         sender: "system",
         name: "System",
-        avatar: "",
         color: "",
         content,
         round: 0,
@@ -188,7 +266,6 @@ export default function DebateRoom() {
             id: `ai-${Date.now()}`,
             sender: "ai",
             name: persona.name,
-            avatar: persona.avatar,
             color: persona.color,
             content: data.content,
             round: currentRound,
@@ -217,12 +294,10 @@ export default function DebateRoom() {
     setInput("");
     setSending(true);
 
-    // Add user message to chat immediately
     const userMsg: ChatMessage = {
       id: `user-${Date.now()}`,
       sender: "user",
       name: "You",
-      avatar: "Y",
       color: "var(--red-light)",
       content,
       round,
@@ -230,8 +305,12 @@ export default function DebateRoom() {
     };
     setMessages((prev) => [...prev, userMsg]);
 
-    // Save to DB
     try {
+      let audioUrl: string | null = null;
+      if (audioBlob) {
+        audioUrl = await uploadAudio(audioBlob);
+      }
+
       await fetch(`/api/debates/${debateId}/arguments`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -239,26 +318,34 @@ export default function DebateRoom() {
           content,
           side: "for",
           round,
+          audioUrl: audioUrl || undefined,
         }),
       });
+
+      // Clear audio state
+      setAudioBlob(null);
+      setAudioUrl(null);
     } catch (err) {
       console.error("Failed to save argument:", err);
     }
 
-    // Generate AI response
     if (debate.opponent_type === "ai" && persona) {
       await triggerAiResponse(content, round);
+    } else if (debate.opponent_type === "human") {
+      // For human opponents, wait for them to respond via polling
+      setSending(false);
+      setRoundOver(false);
+      addSystemMessage("Argument submitted. Waiting for opponent...");
     } else {
       setSending(false);
       setRoundOver(true);
     }
 
     if (timerRef.current) clearInterval(timerRef.current);
-  }, [input, debate, sending, round, persona, debateId, triggerAiResponse]);
+  }, [input, debate, sending, round, persona, debateId, triggerAiResponse, addSystemMessage]);
 
   const handleNextRound = useCallback(() => {
     if (round >= 3) {
-      // End debate
       completeDebate();
       return;
     }
@@ -276,11 +363,18 @@ export default function DebateRoom() {
         const data = await res.json();
         setResultData(data);
         setCompleted(true);
+      } else {
+        const err = await res.json().catch(() => ({ error: "Unknown error" }));
+        console.error("Complete debate failed:", err);
+        // Even if API fails, navigate to results which can handle partial state
+        r.push(`/debate/${debateId}/results`);
       }
     } catch (err) {
       console.error("Failed to complete debate:", err);
+      // Navigate anyway — results page will show what exists
+      r.push(`/debate/${debateId}/results`);
     }
-  }, [debateId]);
+  }, [debateId, r]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -292,12 +386,111 @@ export default function DebateRoom() {
     [handleSend]
   );
 
+  // Voice recording with Web Speech API + MediaRecorder
+  const toggleRecording = useCallback(async () => {
+    if (isRecording) {
+      // Stop recording
+      if (speechRecognitionRef.current) {
+        speechRecognitionRef.current.stop();
+        speechRecognitionRef.current = null;
+      }
+      if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
+        mediaRecorderRef.current.stop();
+      }
+      setIsRecording(false);
+      return;
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      // Start MediaRecorder for audio blob
+      const mediaRecorder = new MediaRecorder(stream);
+      mediaRecorderRef.current = mediaRecorder;
+      audioChunksRef.current = [];
+
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data);
+      };
+
+      mediaRecorder.onstop = () => {
+        const blob = new Blob(audioChunksRef.current, { type: "audio/webm" });
+        setAudioBlob(blob);
+        setAudioUrl(URL.createObjectURL(blob));
+        stream.getTracks().forEach(t => t.stop());
+      };
+
+      mediaRecorder.start();
+
+      // Start Web Speech API for live transcription
+      const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (SpeechRecognition) {
+        const recognition = new SpeechRecognition();
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = "en-US";
+
+        let finalTranscript = input;
+
+        recognition.onresult = (event: any) => {
+          let interim = "";
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            if (event.results[i].isFinal) {
+              finalTranscript += event.results[i][0].transcript + " ";
+            } else {
+              interim += event.results[i][0].transcript;
+            }
+          }
+          setInput((finalTranscript + interim).trim());
+        };
+
+        recognition.onerror = (event: any) => {
+          console.error("Speech recognition error:", event.error);
+          if (event.error !== "no-speech") {
+            setIsRecording(false);
+          }
+        };
+
+        recognition.onend = () => {
+          // Restart if still recording
+          if (mediaRecorderRef.current?.state === "recording") {
+            try { recognition.start(); } catch {}
+          }
+        };
+
+        recognition.start();
+        speechRecognitionRef.current = recognition;
+        setIsRecording(true);
+      } else {
+        // Fallback: just record audio without transcription
+        setIsRecording(true);
+      }
+    } catch (err) {
+      console.error("Microphone access denied:", err);
+    }
+  }, [isRecording, input]);
+
+  const uploadAudio = useCallback(async (blob: Blob): Promise<string | null> => {
+    try {
+      const formData = new FormData();
+      formData.append("file", blob, `debate-${debateId}-round${round}.webm`);
+      const res = await fetch("/api/upload", { method: "POST", body: formData });
+      if (res.ok) {
+        const data = await res.json();
+        return data.url;
+      }
+    } catch (err) {
+      console.error("Audio upload failed:", err);
+    }
+    return null;
+  }, [debateId, round]);
+
   if (loading) {
     return (
       <AppShell>
         <div style={{ textAlign: "center", padding: 60, color: "var(--muted)" }}>
-          <LoaderCircle className="spin" size={24} />
-          <p style={{ marginTop: 12 }}>Loading debate...</p>
+          <div className="spin" style={{ width: 24, height: 24, border: "2px solid var(--line)", borderTopColor: "var(--red-light)", borderRadius: "50%", margin: "0 auto 12px" }} />
+          <p style={{ margin: 0, fontSize: 14, fontWeight: 700 }}>Loading debate...</p>
         </div>
       </AppShell>
     );
@@ -305,48 +498,62 @@ export default function DebateRoom() {
 
   return (
     <AppShell>
-      <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 80px)", maxWidth: 800, margin: "0 auto" }}>
-        {/* Chat header */}
+      <style>{bubbleKeyframes}</style>
+      <div style={{
+        display: "flex", flexDirection: "column", height: "calc(100vh - 80px)",
+        maxWidth: 720, margin: "0 auto", position: "relative",
+      }}>
+        {/* Header */}
         <div style={{
-          display: "flex", alignItems: "center", gap: 12, padding: "12px 0",
-          borderBottom: "1px solid var(--line)", marginBottom: 0, flexShrink: 0,
+          display: "flex", alignItems: "center", gap: 10, padding: "10px 0",
+          borderBottom: "1px solid var(--line)", flexShrink: 0, zIndex: 2,
         }}>
           <button
             onClick={() => r.push("/dashboard")}
-            style={{ background: "none", border: "none", color: "var(--muted)", cursor: "pointer", padding: 4 }}
+            style={{
+              background: "none", border: "none", color: "var(--muted)",
+              cursor: "pointer", padding: 4, display: "grid", placeItems: "center",
+            }}
           >
-            <ArrowLeft size={20} />
+            <ChevronLeft size={22} />
           </button>
 
           {persona && (
             <div style={{
-              width: 36, height: 36, borderRadius: 10,
-              background: `${persona.color}22`, color: persona.color,
+              width: 38, height: 38, borderRadius: 50,
+              background: `linear-gradient(135deg, ${persona.color}44, ${persona.color}22)`,
+              color: persona.color,
               display: "grid", placeItems: "center",
-              fontWeight: 900, fontSize: 14, flexShrink: 0,
+              fontWeight: 900, fontSize: 15, flexShrink: 0,
             }}>
               {persona.avatar}
             </div>
           )}
 
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 800, fontSize: 15, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+            <div style={{
+              fontWeight: 800, fontSize: 15,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            }}>
               {persona?.name || "Opponent"}
             </div>
-            <div style={{ fontSize: 11, color: "var(--muted)", fontWeight: 700 }}>
-              {debate?.topic?.slice(0, 50)}{debate?.topic && debate.topic.length > 50 ? "..." : ""}
+            <div style={{
+              fontSize: 11, color: "var(--muted)", fontWeight: 700,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            }}>
+              {debate?.topic}
             </div>
           </div>
 
           <div style={{ textAlign: "right", flexShrink: 0 }}>
             <div style={{
-              fontSize: 11, fontWeight: 900, color: "var(--muted)",
-              textTransform: "uppercase", letterSpacing: ".08em",
+              fontSize: 10, fontWeight: 900, color: "var(--muted)",
+              textTransform: "uppercase", letterSpacing: ".1em", marginBottom: 1,
             }}>
-              Round {round}/3
+              R{round}/3
             </div>
             <div style={{
-              font: "700 16px var(--font-mono)",
+              font: "700 15px var(--font-mono)",
               color: timeLeft < 30 ? "var(--red-light)" : "var(--gold)",
             }}>
               {formatTime(timeLeft)}
@@ -354,31 +561,44 @@ export default function DebateRoom() {
           </div>
         </div>
 
-        {/* Messages area */}
+        {/* Messages */}
         <div style={{
-          flex: 1, overflowY: "auto", padding: "16px 0",
-          display: "flex", flexDirection: "column", gap: 8,
+          flex: 1, overflowY: "auto", padding: "12px 8px",
+          display: "flex", flexDirection: "column", gap: 2,
+          scrollBehavior: "smooth",
         }}>
-          {messages.map((msg) => (
-            <ChatBubble key={msg.id} msg={msg} isOwn={msg.sender === "user"} />
-          ))}
+          {messages.map((msg, idx) => {
+            const prev = messages[idx - 1];
+            const isFirstInGroup = !prev || prev.sender !== msg.sender || msg.sender === "system";
+            const isLastInGroup = idx === messages.length - 1 || messages[idx + 1]?.sender !== msg.sender;
+            return (
+              <Bubble
+                key={msg.id}
+                msg={msg}
+                isOwn={msg.sender === "user"}
+                isFirst={isFirstInGroup}
+                isLast={isLastInGroup}
+              />
+            );
+          })}
 
           {sending && persona && (
-            <div style={{ display: "flex", gap: 8, alignItems: "flex-end", paddingLeft: 4 }}>
+            <div style={{
+              display: "flex", gap: 6, alignItems: "flex-end",
+              paddingLeft: 8, paddingRight: 48,
+              animation: "bubbleIn 0.2s ease-out",
+            }}>
               <div style={{
-                width: 28, height: 28, borderRadius: 8,
-                background: `${persona.color}22`, color: persona.color,
-                display: "grid", placeItems: "center",
-                fontWeight: 900, fontSize: 11, flexShrink: 0,
+                padding: "12px 16px", borderRadius: 20, borderTopLeftRadius: 4,
+                background: "#1a1c22", display: "flex", gap: 4, alignItems: "center",
               }}>
-                {persona.avatar}
-              </div>
-              <div style={{
-                padding: "10px 14px", borderRadius: 14, borderTopLeftRadius: 4,
-                background: "#1a1c22", color: "var(--muted)", fontSize: 13,
-              }}>
-                <LoaderCircle className="spin" size={14} style={{ marginRight: 6 }} />
-                typing...
+                {[0, 1, 2].map((i) => (
+                  <div key={i} style={{
+                    width: 7, height: 7, borderRadius: "50%",
+                    background: persona.color || "var(--muted)",
+                    animation: `typingDot 1.2s ease-in-out ${i * 0.15}s infinite`,
+                  }} />
+                ))}
               </div>
             </div>
           )}
@@ -386,76 +606,109 @@ export default function DebateRoom() {
           <div ref={chatEndRef} />
         </div>
 
-        {/* Input area */}
+        {/* Input */}
         <div style={{
-          borderTop: "1px solid var(--line)", padding: "12px 0", flexShrink: 0,
+          padding: "8px 0 6px", flexShrink: 0,
+          background: "linear-gradient(transparent, var(--ink) 30%)",
         }}>
           {completed && resultData ? (
-            <div style={{ textAlign: "center", padding: 20 }}>
+            <div style={{
+              textAlign: "center", padding: 20,
+              animation: "fadeUp 0.3s ease-out",
+            }}>
               <div style={{
-                font: "700 24px var(--font-display)",
+                font: "800 22px var(--font-display)",
                 color: resultData.won ? "var(--gold)" : "var(--muted)",
-                marginBottom: 8,
+                marginBottom: 10,
               }}>
-                {resultData.won ? "VICTORY" : "DEFEAT"} — +{resultData.xp} XP
+                {resultData.won ? "VICTORY" : "DEFEAT"} &mdash; +{resultData.xp} XP
               </div>
               <button className="button" onClick={() => r.push(`/debate/${debateId}/results`)}>
                 See full results
               </button>
             </div>
           ) : roundOver ? (
-            <div style={{ display: "flex", gap: 10, justifyContent: "center" }}>
+            <div style={{
+              display: "flex", gap: 10, justifyContent: "center",
+              animation: "fadeUp 0.3s ease-out",
+            }}>
               {round < 3 ? (
                 <button className="button" onClick={handleNextRound}>
                   Next round &rarr;
                 </button>
               ) : (
-                <button className="button" onClick={completeDebate}>
+                <button className="button gold" onClick={completeDebate}>
                   End debate
                 </button>
               )}
             </div>
           ) : (
-            <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+            <div style={{
+              display: "flex", gap: 8, alignItems: "flex-end",
+              background: "#13151a", border: "1px solid var(--line)",
+              borderRadius: 24, padding: "4px 4px 4px 16px",
+              transition: "border-color 0.15s, box-shadow 0.15s",
+              ...(input ? { borderColor: "var(--red-light)", boxShadow: "0 0 0 1px var(--red-light)" } : {}),
+            }}>
               <textarea
                 ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyDown}
                 maxLength={700}
-                placeholder={`Round ${round}: ${round === 1 ? "Opening statement..." : round === 2 ? "Rebuttal..." : "Closing argument..."}`}
                 rows={1}
+                placeholder={`Round ${round}: ${round === 1 ? "Opening statement..." : round === 2 ? "Rebuttal..." : "Closing argument..."}`}
                 style={{
-                  flex: 1, resize: "none", background: "#0c0d10", border: "1px solid var(--line)",
-                  borderRadius: 14, padding: "10px 14px", color: "white", fontSize: 14,
-                  outline: "none", fontFamily: "var(--font-body), Arial, sans-serif",
-                  maxHeight: 120, minHeight: 42,
-                }}
-                onFocus={(e) => {
-                  e.currentTarget.style.borderColor = "var(--red-light)";
-                }}
-                onBlur={(e) => {
-                  e.currentTarget.style.borderColor = "var(--line)";
+                  flex: 1, resize: "none", background: "transparent",
+                  border: "none", padding: "10px 0", color: "white",
+                  fontSize: 15, outline: "none", lineHeight: 1.4,
+                  fontFamily: "var(--font-body), Arial, sans-serif",
+                  maxHeight: 100, minHeight: 24,
                 }}
               />
+              <button
+                onClick={toggleRecording}
+                title={isRecording ? "Stop recording" : "Record voice"}
+                style={{
+                  width: 36, height: 36, borderRadius: "50%",
+                  background: isRecording ? "var(--red-light)" : "transparent",
+                  border: "none", color: isRecording ? "white" : "var(--muted)",
+                  cursor: "pointer", display: "grid", placeItems: "center",
+                  flexShrink: 0, transition: "all 0.2s ease",
+                  animation: isRecording ? "pulse 1.5s ease-in-out infinite" : "none",
+                }}
+              >
+                {isRecording ? <MicOff size={16} /> : <Mic size={16} />}
+              </button>
               <button
                 onClick={handleSend}
                 disabled={!input.trim() || sending}
                 style={{
-                  width: 42, height: 42, borderRadius: 12,
-                  background: input.trim() ? "var(--red-light)" : "#1a1c22",
+                  width: 36, height: 36, borderRadius: "50%",
+                  background: input.trim() ? "var(--red-light)" : "transparent",
                   border: "none", color: input.trim() ? "white" : "var(--muted)",
                   cursor: input.trim() ? "pointer" : "not-allowed",
                   display: "grid", placeItems: "center", flexShrink: 0,
-                  transition: "all 0.15s ease",
+                  transition: "all 0.2s ease",
+                  transform: input.trim() ? "scale(1)" : "scale(0.85)",
+                  opacity: input.trim() ? 1 : 0.4,
                 }}
               >
-                <Send size={18} />
+                <Send size={16} style={{ marginLeft: -1 }} />
               </button>
             </div>
           )}
-          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6, textAlign: "center", fontWeight: 700 }}>
-            {input.length}/700 &middot; Enter to send, Shift+Enter for new line
+          <div style={{
+            fontSize: 10, color: "var(--muted)", marginTop: 5,
+            textAlign: "center", fontWeight: 700, opacity: 0.6,
+          }}>
+            {isRecording ? (
+              <span style={{ color: "var(--red-light)" }}>Recording... Click mic to stop</span>
+            ) : input.length > 0 ? (
+              `${input.length}/700`
+            ) : (
+              "Enter to send"
+            )}
           </div>
         </div>
       </div>
@@ -463,13 +716,27 @@ export default function DebateRoom() {
   );
 }
 
-function ChatBubble({ msg, isOwn }: { msg: ChatMessage; isOwn: boolean }) {
+function Bubble({
+  msg,
+  isOwn,
+  isFirst,
+  isLast,
+}: {
+  msg: ChatMessage;
+  isOwn: boolean;
+  isFirst: boolean;
+  isLast: boolean;
+}) {
   if (msg.sender === "system") {
     return (
-      <div style={{ textAlign: "center", padding: "4px 0" }}>
+      <div style={{
+        textAlign: "center", padding: "6px 0",
+        animation: "fadeUp 0.25s ease-out",
+      }}>
         <span style={{
           fontSize: 11, color: "var(--muted)", fontWeight: 700,
-          background: "#1a1c22", padding: "4px 12px", borderRadius: 10,
+          background: "rgba(255,255,255,0.04)", padding: "4px 14px",
+          borderRadius: 12, display: "inline-block",
         }}>
           {msg.content}
         </span>
@@ -477,51 +744,65 @@ function ChatBubble({ msg, isOwn }: { msg: ChatMessage; isOwn: boolean }) {
     );
   }
 
+  const bg = isOwn ? "var(--red-light)" : "#1a1c22";
+  const textColor = isOwn ? "white" : "#e2e4e8";
+
+  // iMessage bubble tail: round the corner that faces away
+  const radius = 20;
+  const tailSmall = 6;
+  const borderRadius = isOwn
+    ? `${radius}px ${tailSmall}px ${radius}px ${radius}px`
+    : `${tailSmall}px ${radius}px ${radius}px ${radius}px`;
+
+  const groupRadius = isFirst && isLast
+    ? `${radius}px`
+    : isFirst
+      ? isOwn
+        ? `${radius}px ${tailSmall}px ${tailSmall}px ${radius}px`
+        : `${tailSmall}px ${radius}px ${radius}px ${tailSmall}px`
+      : isLast
+        ? isOwn
+          ? `${radius}px ${radius}px ${tailSmall}px ${radius}px`
+          : `${radius}px ${radius}px ${radius}px ${tailSmall}px`
+        : `${radius}px`;
+
   return (
     <div style={{
-      display: "flex", gap: 8, alignItems: "flex-end",
+      display: "flex",
       flexDirection: isOwn ? "row-reverse" : "row",
-      paddingLeft: isOwn ? 40 : 4,
-      paddingRight: isOwn ? 4 : 40,
+      alignItems: "flex-end",
+      gap: 6,
+      paddingLeft: isOwn ? 48 : 4,
+      paddingRight: isOwn ? 4 : 48,
+      marginTop: isFirst ? 8 : 1,
+      animation: "bubbleIn 0.25s ease-out",
     }}>
-      {!isOwn && (
+      <div style={{
+        padding: "9px 14px",
+        borderRadius: groupRadius,
+        background: bg,
+        color: textColor,
+        fontSize: 14.5,
+        lineHeight: 1.45,
+        wordBreak: "break-word",
+        position: "relative",
+        maxWidth: "100%",
+      }}>
+        {msg.content}
+      </div>
+      {isLast && (
         <div style={{
-          width: 28, height: 28, borderRadius: 8,
-          background: `${msg.color}22`, color: msg.color,
-          display: "grid", placeItems: "center",
-          fontWeight: 900, fontSize: 11, flexShrink: 0,
+          fontSize: 9,
+          color: "var(--muted)",
+          fontWeight: 700,
+          opacity: 0.5,
+          whiteSpace: "nowrap",
+          alignSelf: "flex-end",
+          paddingBottom: 2,
         }}>
-          {msg.avatar}
+          {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
         </div>
       )}
-
-      <div>
-        {!isOwn && (
-          <div style={{
-            fontSize: 11, fontWeight: 800, color: msg.color,
-            marginBottom: 2, paddingLeft: 2,
-          }}>
-            {msg.name}
-          </div>
-        )}
-        <div style={{
-          padding: "10px 14px", borderRadius: 14,
-          borderTopLeftRadius: isOwn ? 14 : 4,
-          borderTopRightRadius: isOwn ? 4 : 14,
-          background: isOwn ? "var(--red-light)" : "#1a1c22",
-          color: isOwn ? "white" : "#d7d9dd",
-          fontSize: 14, lineHeight: 1.5,
-          wordBreak: "break-word",
-        }}>
-          {msg.content}
-        </div>
-        <div style={{
-          fontSize: 10, color: "var(--muted)", marginTop: 2,
-          textAlign: isOwn ? "right" : "left", paddingLeft: 2, paddingRight: 2,
-        }}>
-          R{msg.round} &middot; {msg.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-        </div>
-      </div>
     </div>
   );
 }

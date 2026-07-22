@@ -20,7 +20,6 @@ export async function POST(
     return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
   }
 
-  // Verify user is part of this debate
   const debateCheck = await pool.query(
     `SELECT id, created_by, opponent_id FROM debates WHERE id = $1`,
     [params.id]
@@ -35,7 +34,6 @@ export async function POST(
     return NextResponse.json({ error: "Not part of this debate" }, { status: 403 });
   }
 
-  // Generate AI response
   let response;
   try {
     response = await generatePersonaResponse(
@@ -47,14 +45,13 @@ export async function POST(
     );
   } catch (err) {
     console.error("AI generation failed, using fallback:", err);
-    response = { content: getFallback(personaId, round) };
+    response = { content: getFallback(personaId, topic, round) };
   }
 
   if (!response.content || !response.content.trim()) {
-    response.content = getFallback(personaId, round);
+    response.content = getFallback(personaId, topic, round);
   }
 
-  // Save AI argument to database
   const aiUserId = `ai-${personaId}`;
 
   try {
@@ -77,55 +74,56 @@ export async function POST(
     }
   } catch (err) {
     console.error("Failed to save AI argument:", err);
-    // Still return the response even if DB save fails
   }
 
   return NextResponse.json({ content: response.content });
 }
 
-function getFallback(personaId: string, round: number): string {
+function getFallback(personaId: string, topic: string, round: number): string {
+  const t = topic.toLowerCase();
   const fallbacks: Record<string, string[]> = {
     "the-rookie": [
-      "That's an interesting point, but I think there's more to consider here. My gut tells me the other side has some valid concerns too.",
-      "Hmm, you make a good case. But I've been thinking about this and I feel like there are practical implications you're missing.",
-      "I'll admit, that's a strong argument. But I still believe my position holds up when you look at the bigger picture.",
+      `You're oversimplifying ${t}. The real world doesn't work like that — there are consequences you're not considering. When you actually look at what happens after ${t} takes effect, the picture gets a lot less clean. I think the practical costs outweigh your theoretical benefits.`,
+      `That sounds good in theory, but what about when ${t} meets reality? People don't behave the way your model predicts. When we look at actual outcomes of ${t}, the results are messy and unpredictable. That's exactly why your side of this argument doesn't hold up.`,
+      `I hear your point, but you're ignoring the human cost of ${t}. Real people are affected by this, and your framework doesn't account for that. When you zoom out and look at the full impact of ${t}, the answer becomes much less clear.`,
     ],
     "the-contrarian": [
-      "Hard disagree. That argument sounds good on paper but falls apart when you actually think about it.",
-      "That's exactly what everyone says, and it's exactly why everyone is wrong.",
-      "Sure, if you ignore half the evidence. But when you look at the full picture, your argument crumbles.",
+      `Hard disagree on ${t}. That argument sounds good but falls apart when you examine the evidence. Everyone repeats the same talking points about ${t}, and everyone is wrong. The actual data tells a very different story.`,
+      `That's exactly what everyone says about ${t}, and it's exactly why everyone is wrong. Your position on ${t} relies on assumptions that crumble under scrutiny. When you strip away the rhetoric, what's left is wishful thinking.`,
+      `Wrong about ${t}. You've presented correlation as causation, which is a fatal error. The moment you separate the variables that actually matter in ${t}, your argument evaporates.`,
     ],
     "the-academic": [
-      "While that perspective has some merit, the empirical evidence actually suggests a more nuanced conclusion.",
-      "I appreciate the logical framework, but your premises need examination.",
-      "Your argument relies on an appeal to common intuition, but rigorous analysis reveals significant flaws.",
+      `Your argument about ${t} rests on a logical error. You've assumed correlation implies causation, which the literature on ${t} has debunked. When you apply proper methodology, the effect you're describing reverses. The peer-reviewed research on ${t} is unambiguous on this.`,
+      `The evidence base for your claim about ${t} is considerably weaker than presented. When we control for confounding variables, your conclusion doesn't follow. The empirical data on ${t} actually suggests the opposite of what you're arguing.`,
+      `You've made an ecological inference error in the context of ${t}. Individual-level data contradicts your aggregate conclusion. When we examine actual outcomes of ${t} with proper controls, your framework doesn't hold.`,
     ],
     "the-devils-advocate": [
-      "I'm going to challenge that directly. Your argument assumes something that isn't proven.",
-      "You're making this too easy. The moment you examine your core assumption, your position collapses.",
-      "Your argument has a fundamental flaw you haven't addressed.",
+      `What if the opposite is true about ${t}? You've built your argument on an assumption you haven't tested. Let me challenge that assumption and show you what happens when we actually examine ${t} without bias.`,
+      `Your argument about ${t} depends on a definition you haven't examined. Once we question that definition, everything unravels. You've rigged the game by controlling how you define the terms of ${t}.`,
+      `Your position on ${t} requires a chain of assumptions. If any link breaks — and several do — the whole thing collapses. Let me show you exactly where your reasoning about ${t} fails.`,
     ],
     "the-storyteller": [
-      "That reminds me of a story. There was once a person who believed exactly what you're saying — until reality proved them wrong.",
-      "Your argument is logical, but let me paint you a picture. Imagine your position taken to its extreme.",
-      "Numbers and facts are important, but stories are what change minds.",
+      `Your argument about ${t} is logical. But let me paint a picture. Imagine a world where your position on ${t} is taken to its extreme. Now imagine the people living in that world — the ones who don't fit your neat categories. Their existence is the counter-argument.`,
+      `I once knew someone who believed what you're saying about ${t}. They were so convinced. Then reality proved them wrong — not through logic, but through lived experience. That's the thing about ${t} — theory meets reality and reality wins.`,
+      `You're making a logical case about ${t}, but stories reveal what data can't. When you look at the individual lives affected by ${t}, your neat framework falls apart. Real people's experiences don't match your model.`,
     ],
     "the-philosopher": [
-      "Before we continue, I need to ask: what do you mean by that?",
-      "You've built a compelling case, but you've overlooked something fundamental.",
-      "The strength of your argument depends entirely on an assumption you haven't questioned.",
+      `What do you actually mean by your claim about ${t}? Your argument hinges on a definition you haven't examined. If we can't agree on what ${t} means, how can we agree on what's true? The unexamined argument is not worth making.`,
+      `Your conclusion about ${t} is actually a premise in disguise. You've assumed the very thing you're trying to prove. That's circular reasoning, no matter how elegantly you present it about ${t}.`,
+      `If your argument about ${t} is correct, what follows? Have you considered the implications? When I trace your logic to its conclusion, I arrive somewhere uncomfortable. The implications of your position on ${t} are more radical than you acknowledge.`,
     ],
     "the-prosecutor": [
-      "Let me cross-examine that claim. You said one thing but your evidence says another.",
-      "I'm going to press you on that point. You made an assertion without evidence.",
-      "Your argument has a critical weakness — you've conflated correlation with causation.",
+      `Let me cross-examine your claim about ${t}. You said one thing but your evidence says another. Which is it? You can't have it both ways, and the contradiction is fatal to your argument.`,
+      `Your argument about ${t} has three pillars, and I'm going to knock each one down. Your premise is incomplete, your logic has gaps, and your conclusion doesn't follow. The evidence simply doesn't support your position on ${t}.`,
+      `I'm going to press you on ${t}. You made an assertion without evidence. You've presented opinion as fact, and the burden of proof is on you. You haven't met it.`,
     ],
     "the-diplomat": [
-      "I see the merit in your position. But there's a more balanced perspective we're both missing.",
-      "You've raised valid concerns. Let me suggest a framing that addresses both sides.",
-      "The truth usually lies in the middle. Your argument captures part of the picture, but misses the other half.",
+      `I see merit in your position on ${t}, but there's a more balanced view. Your argument captures part of the truth about ${t}, but it's not the whole truth. When you include both sides, a more nuanced picture emerges.`,
+      `You've raised valid concerns about ${t}. Let me suggest a framing that addresses both sides. The problem with your position isn't that it's wrong — it's that it's incomplete. The full picture of ${t} is more complex.`,
+      `Both sides have a point about ${t}. The truth usually lies in the middle. Your argument captures something real, but it misses important perspectives. Let me offer a view that includes both.`,
     ],
   };
+
   const pool = fallbacks[personaId] || fallbacks["the-rookie"];
   const idx = (round - 1) % pool.length;
   return pool[idx];

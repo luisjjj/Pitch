@@ -16,59 +16,165 @@ export async function generatePersonaResponse(
     return { content: "I'm not sure how to respond to that." };
   }
 
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey) {
-    return generateFallbackResponse(persona, topic, userArgument, round);
+  // Try OpenRouter first (free Llama 3.1 70B), then Gemini, then local fallback
+  const openRouterKey = process.env.OPENROUTER_API_KEY;
+  const geminiKey = process.env.GEMINI_API_KEY;
+
+  if (openRouterKey) {
+    try {
+      return await callOpenRouter(openRouterKey, persona, topic, userArgument, round, side);
+    } catch (err) {
+      console.error("OpenRouter failed, trying Gemini:", err);
+    }
   }
 
+  if (geminiKey) {
+    try {
+      return await callGemini(geminiKey, persona, topic, userArgument, round, side);
+    } catch (err) {
+      console.error("Gemini failed, using local fallback:", err);
+    }
+  }
+
+  return generateFallbackResponse(persona, topic, userArgument, round);
+}
+
+async function callOpenRouter(
+  apiKey: string,
+  persona: { id: string; name: string; title: string; systemPrompt: string; avatar: string; color: string },
+  topic: string,
+  userArgument: string,
+  round: number,
+  side: string
+): Promise<PersonaResponse> {
+  const position = side === "for" ? "FOR" : "AGAINST";
   const roundContext =
     round === 1
-      ? "This is the opening statement round. Make your case."
+      ? `OPENING STATEMENT. You are arguing ${position} the motion. State your core argument and give 2-3 specific reasons about why the motion is ${side === "for" ? "correct" : "wrong"}.`
       : round === 2
-        ? "This is the rebuttal round. Respond to their arguments and strengthen your position."
-        : "This is the closing round. Summarize your strongest points and deliver a final blow.";
+        ? "REBUTTAL. Counter their specific points about the motion, then add a NEW argument they haven't addressed."
+        : "CLOSING. Summarize your strongest arguments about the motion, dismantle their weakest point, end strong.";
 
-  const prompt = [
-    `You are ${persona.name} — ${persona.title}.`,
-    persona.systemPrompt,
-    ``,
-    `DEBATE TOPIC: "${topic}"`,
-    `YOUR POSITION: You are arguing ${side === "for" ? "FOR" : "AGAINST"} the motion.`,
-    `ROUND ${round}: ${roundContext}`,
-    ``,
-    `YOUR OPPONENT JUST SAID:`,
-    `"${userArgument}"`,
-    ``,
-    `Rules:`,
-    `- Respond DIRECTLY to what they said. Reference their specific points.`,
-    `- Stay in character as ${persona.name}.`,
-    `- Be concise (2-4 sentences max).`,
-    `- Do NOT break character or mention you are AI.`,
-    `- Do NOT repeat yourself across rounds.`,
-  ].join("\n");
+  const systemPrompt = `You are ${persona.name} — "${persona.title}".
+${persona.systemPrompt}
 
-  try {
-    const { GoogleGenAI } = await import("@google/genai");
-    const genai = new GoogleGenAI({ apiKey });
-    const response = await genai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-      config: {
-        temperature: 0.8,
-        maxOutputTokens: 200,
-      },
-    });
+You are in a formal debate. Every response must directly reference the motion "${topic}". Never go off-topic. Be specific, use evidence, examples, and logical reasoning. Stay in character at all times.`;
 
-    const text = response.text || "";
-    if (text.trim()) {
-      return { content: text.trim() };
-    }
-  } catch (err) {
-    console.error("Gemini API error:", err);
+  const userPrompt = `MOTION: "${topic}"
+YOU ARE ARGUING: ${position}
+ROUND ${round}: ${roundContext}
+
+OPPONENT SAID:
+"${userArgument}"
+
+Write your response. Rules:
+- Every sentence must relate back to the motion "${topic}"
+- Start by addressing something specific your opponent said
+- Then make your own argument about the motion with evidence or reasoning
+- End with a challenge or question
+- 3-5 sentences. Be substantive, not generic.
+- Stay in character as ${persona.name}`;
+
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://pitch-rouge-omega.vercel.app",
+      "X-Title": "Pitch Debate App",
+    },
+    body: JSON.stringify({
+      model: "openrouter/free",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0.85,
+      max_tokens: 600,
+    }),
+  });
+
+  const rawText = await res.text();
+  console.log(`[OpenRouter] status=${res.status} len=${rawText.length}`);
+
+  if (!res.ok) {
+    throw new Error(`OpenRouter ${res.status}: ${rawText.slice(0, 500)}`);
   }
 
-  // Always fall back to contextual response
-  return generateFallbackResponse(persona, topic, userArgument, round);
+  let data: any;
+  try {
+    data = JSON.parse(rawText);
+  } catch {
+    throw new Error(`OpenRouter invalid JSON: ${rawText.slice(0, 300)}`);
+  }
+
+  // Extract content — some models return it in reasoning field
+  const message = data.choices?.[0]?.message;
+  let text = message?.content?.trim();
+  if (!text && message?.reasoning) {
+    text = message.reasoning.trim();
+  }
+
+  console.log(`[OpenRouter] content len=${text?.length || 0}`);
+
+  if (!text) {
+    throw new Error(`OpenRouter empty. Keys: ${Object.keys(data).join(",")}`);
+  }
+
+  return { content: text };
+}
+
+async function callGemini(
+  apiKey: string,
+  persona: { id: string; name: string; title: string; systemPrompt: string; avatar: string; color: string },
+  topic: string,
+  userArgument: string,
+  round: number,
+  side: string
+): Promise<PersonaResponse> {
+  const position = side === "for" ? "FOR" : "AGAINST";
+  const roundContext =
+    round === 1
+      ? `OPENING STATEMENT. You are arguing ${position} the motion. State your core argument and give 2-3 specific reasons.`
+      : round === 2
+        ? "REBUTTAL. Counter their specific points about the motion, then add a NEW argument."
+        : "CLOSING. Summarize your strongest arguments, dismantle their weakest point.";
+
+  const prompt = `You are debating the motion: "${topic}"
+You are arguing ${position} the motion.
+
+YOUR CHARACTER: You are ${persona.name} — "${persona.title}".
+${persona.systemPrompt}
+
+ROUND ${round}: ${roundContext}
+
+OPPONENT SAID:
+"${userArgument}"
+
+Write your response. Rules:
+- Every sentence must relate back to the motion "${topic}"
+- Start by addressing something specific your opponent said
+- Then make your own argument about the motion
+- End with a challenge
+- 3-5 sentences. Be specific, not generic.`;
+
+  const { GoogleGenAI } = await import("@google/genai");
+  const genai = new GoogleGenAI({ apiKey });
+  const response = await genai.models.generateContent({
+    model: "gemini-2.0-flash",
+    contents: prompt,
+    config: {
+      temperature: 0.85,
+      maxOutputTokens: 500,
+    },
+  });
+
+  const text = response.text || "";
+  if (!text.trim() || text.trim().length < 30) {
+    throw new Error("Response too short");
+  }
+
+  return { content: text.trim() };
 }
 
 function generateFallbackResponse(
@@ -77,156 +183,52 @@ function generateFallbackResponse(
   userArgument: string,
   round: number
 ): PersonaResponse {
-  // Extract key words from user's argument to reference
-  const words = userArgument
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, "")
-    .split(/\s+/)
-    .filter((w) => w.length > 4);
-  const keyPhrase = words.slice(0, 3).join(" ") || topic.split(" ").slice(0, 3).join(" ");
+  const topicLower = topic.toLowerCase();
 
-  const responses: Record<string, string[][]> = {
+  const responses: Record<string, string[]> = {
     "the-rookie": [
-      [
-        `Okay I hear you on "${keyPhrase}" but honestly I think there's a simpler way to look at this.`,
-        `You make a fair point, but my gut says you're overlooking the practical side of things.`,
-        `I get what you're saying, but from where I stand, the evidence points the other direction.`,
-      ],
-      [
-        `That's a solid argument, but I've been thinking and I feel like the real issue is broader than that.`,
-        `You're right about some of it, but you're missing the bigger picture here.`,
-        `Hmm, interesting take. But I think when you zoom out, my position still holds.`,
-      ],
-      [
-        `Look, I respect that point, but I think we both know it's not the whole story.`,
-        `You've given me something to think about, but I'm not convinced yet.`,
-        `That's well said, but I still believe the other side has the stronger case overall.`,
-      ],
+      `You're oversimplifying ${topicLower}. The real world doesn't work like that — there are consequences you're not considering. When you actually look at what happens after ${topicLower} takes effect, the picture gets a lot less clean. I think the practical costs outweigh your theoretical benefits, and here's why: people affected by ${topicLower} don't experience it the way you describe.`,
+      `That sounds good in theory, but what about when ${topicLower} meets reality? People don't behave the way your model predicts. When we look at actual outcomes of ${topicLower}, the results are messy and unpredictable. Your argument ignores the second-order effects — the things that happen AFTER ${topicLower} takes effect. That's where the real debate is, and that's where your side falls apart.`,
+      `I've made my case against ${topicLower}, and I stand by it. You haven't addressed the human cost, the practical failures, or the unpredictable outcomes. When you zoom out and look at the full impact of ${topicLower}, the answer becomes clear: the risks far outweigh the rewards.`,
     ],
     "the-contrarian": [
-      [
-        `You literally just proved my point. "${keyPhrase}" — that's exactly the kind of thinking that falls apart under scrutiny.`,
-        `Hard no. That sounds good but it's built on a foundation that crumbles the moment you question it.`,
-        `That's the popular take, and the popular take is usually wrong. Let me show you why.`,
-      ],
-      [
-        `Everyone says that. Everyone is wrong. Your argument about "${keyPhrase}" ignores the obvious counter-evidence.`,
-        `That's a nice narrative, but narratives aren't facts. Your premise doesn't hold up.`,
-        `I disagree, and here's the thing — the moment you examine your core assumption, the whole thing collapses.`,
-      ],
-      [
-        `You're confident, I'll give you that. But confidence isn't evidence.`,
-        `Sure, if you only look at half the data. But we're not doing that here.`,
-        `That argument works if you ignore context. Unfortunately, context matters.`,
-      ],
+      `Wrong about ${topicLower}. That argument sounds good but falls apart when you examine the evidence. Everyone repeats the same talking points about ${topicLower}, and everyone is wrong. The actual data tells a very different story. You've presented correlation as causation, which is a fatal error.`,
+      `That's exactly what everyone says about ${topicLower}, and it's exactly why everyone is wrong. Your position relies on assumptions that crumble under scrutiny. When you strip away the rhetoric, what's left is wishful thinking. The moment you separate the variables that actually matter in ${topicLower}, your argument evaporates.`,
+      `I'll say it plainly: ${topicLower} is not what you think it is. You've been sold a narrative, and you've bought it without checking the receipts. The evidence against your position on ${topicLower} is overwhelming, and the fact that you haven't engaged with it tells me everything I need to know.`,
     ],
     "the-academic": [
-      [
-        `While your point about "${keyPhrase}" has surface-level appeal, the empirical literature actually suggests otherwise. Multiple studies have demonstrated the opposite trend.`,
-        `Your argument contains a logical structure that appears sound but relies on an unstated assumption. Let me examine that.`,
-        `I appreciate the reasoning, but your conclusion doesn't follow from your premises. The data tells a different story.`,
-      ],
-      [
-        `The evidence base for "${keyPhrase}" is considerably weaker than you're suggesting. Peer-reviewed research consistently points in the other direction.`,
-        `You've constructed a compelling narrative, but narratives aren't data. Your claim requires evidence you haven't provided.`,
-        `Your framework is interesting, but it fails to account for the confounding variables that undermine your conclusion.`,
-      ],
-      [
-        `That's a common misconception in this field. The actual research on this is quite clear.`,
-        `Your argument rests on correlation, not causation. That's a fundamental methodological error.`,
-        `I'd encourage you to look at the meta-analyses on this. They paint a very different picture than the one you're describing.`,
-      ],
+      `Your argument about ${topicLower} rests on a logical error. You've assumed correlation implies causation, which the literature on ${topicLower} has debunked. When you apply proper methodology, the effect you're describing reverses. The peer-reviewed research on ${topicLower} is unambiguous on this.`,
+      `The evidence base for your claim about ${topicLower} is considerably weaker than presented. When we control for confounding variables, your conclusion doesn't follow. The empirical data on ${topicLower} actually suggests the opposite of what you're arguing.`,
+      `You've committed an ecological inference error in the context of ${topicLower}. Individual-level data contradicts your aggregate conclusion. When we examine actual outcomes of ${topicLower} with proper controls, your framework doesn't hold.`,
     ],
     "the-devils-advocate": [
-      [
-        `Oh, you think "${keyPhrase}" is settled? Let me flip that entirely. What if the opposite is true?`,
-        `I'm going to challenge that directly. Your argument assumes something you haven't proven, and that assumption is doing all the heavy lifting.`,
-        `You've made my job easy. The moment you examine what you just said, your entire position falls apart.`,
-      ],
-      [
-        `That's a great example of confirmation bias. You're seeing what you want to see in "${keyPhrase}".`,
-        `Your argument has a fatal flaw: it depends on a definition you haven't examined. Once we question that, everything unravels.`,
-        `I love how confident you are. But let me ask you this — what happens when we apply your logic to its extreme?`,
-      ],
-      [
-        `You've built a house of cards. Beautiful structure, but one breeze and it's over.`,
-        `That's the kind of argument that sounds brilliant in a debate club. In reality? Not so much.`,
-        `Interesting. Now let me show you exactly where your reasoning breaks down.`,
-      ],
+      `What if the opposite is true about ${topicLower}? You've built your argument on an assumption you haven't tested. Let me challenge that assumption right now. When we actually examine ${topicLower} without bias, the picture changes dramatically.`,
+      `Your argument about ${topicLower} depends on a definition you haven't examined. Once we question that definition, everything unravels. You've rigged the game by controlling how you define the terms of ${topicLower}.`,
+      `Your position on ${topicLower} requires a chain of assumptions. If any link breaks — and several do — the whole thing collapses. Let me show you exactly where your reasoning about ${topicLower} fails.`,
     ],
     "the-storyteller": [
-      [
-        `Your point about "${keyPhrase}" reminds me of something. There was once a person who believed exactly that — until reality proved them wrong in the most unexpected way.`,
-        `You're making a logical case, but let me paint you a picture. Imagine a world where your position is taken to its absolute extreme. What does that look like?`,
-        `Facts and logic are important, but stories change minds. Let me tell you one that illustrates why I see this differently.`,
-      ],
-      [
-        `I once knew someone who argued exactly what you're saying now. You know what changed their mind? Not data — experience.`,
-        `Your argument about "${keyPhrase}" is well-structured. But there's a human element you're not accounting for, and that element changes everything.`,
-        `Numbers don't lie, but they don't tell the whole truth either. Let me share a perspective that complicates your narrative.`,
-      ],
-      [
-        `Every great argument has a blind spot. Yours is right there in "${keyPhrase}".`,
-        `You're painting with broad strokes. Let me zoom in on the detail you're missing.`,
-        `That's a story you're telling yourself. But there's another version of that story, and it leads somewhere very different.`,
-      ],
+      `Your argument about ${topicLower} is logical. But let me paint a picture. Imagine a world where your position on ${topicLower} is taken to its extreme. Now imagine the people living in that world. Their lived experience is the counter-argument you haven't considered.`,
+      `I once knew someone who believed exactly what you're saying about ${topicLower}. Then reality proved them wrong — not through logic, but through lived experience. That's the thing about ${topicLower} — theory meets reality, and reality always wins.`,
+      `You're making a logical case about ${topicLower}, but stories reveal what data can't. When you zoom in on the individual lives affected by ${topicLower}, your neat framework falls apart. Real people's experiences don't match your model.`,
     ],
     "the-philosopher": [
-      [
-        `Before we go further, I need to ask: what do you actually mean by "${keyPhrase}"? Your argument hinges on a definition you haven't examined.`,
-        `You've built a case, but you've overlooked something fundamental. Is your conclusion actually a premise in disguise?`,
-        `The strength of your argument depends entirely on an assumption you haven't questioned. Let's examine that first.`,
-      ],
-      [
-        `You've given me "${keyPhrase}" as if it's self-evident. But is it? What does that actually mean in this context?`,
-        `Your reasoning is internally consistent, but your starting point is questionable. If we challenge that, the whole structure shifts.`,
-        `There's a paradox in what you're saying. You argue for one thing but your reasoning implies the opposite.`,
-      ],
-      [
-        `Let me ask you something: if your argument is correct, what follows from that? Have you considered the implications?`,
-        `You're treating "${keyPhrase}" as a conclusion when it's actually an unexamined assumption.`,
-        `The unexamined argument is not worth making. Let's look at what you're really saying here.`,
-      ],
+      `What do you actually mean by your claim about ${topicLower}? Your argument hinges on a definition you haven't examined. If we can't agree on what ${topicLower} means, how can we agree on what's true?`,
+      `Your conclusion about ${topicLower} is actually a premise in disguise. You've assumed the very thing you're trying to prove. That's circular reasoning, no matter how elegantly you present it.`,
+      `If your argument about ${topicLower} is correct, what follows? Have you considered the implications? When I trace your logic to its conclusion, I arrive somewhere uncomfortable.`,
     ],
     "the-prosecutor": [
-      [
-        `Let me cross-examine that claim. You said "${keyPhrase}" — but your evidence says something different. Which is it?`,
-        `I'm going to press you on this. You made a claim without sufficient evidence. In any serious forum, that would be challenged.`,
-        `Your argument has a critical weakness: you've conflated correlation with causation. Let me show you exactly where.`,
-      ],
-      [
-        `Your Honor — I mean, your attention — please. The witness, I mean the debater, has just contradicted themselves on "${keyPhrase}".`,
-        `That assertion doesn't survive cross-examination. You've presented opinion as fact, and I won't let that stand.`,
-        `You're relying on the audience not looking too closely at "${keyPhrase}". But I'm looking closely, and it doesn't hold up.`,
-      ],
-      [
-        `The evidence doesn't support your conclusion. Let me walk you through exactly why.`,
-        `You've made a series of claims. Let me address each one, starting with the weakest — which is "${keyPhrase}".`,
-        `Your argument sounds compelling until you examine the facts. And the facts tell a different story.`,
-      ],
+      `Let me cross-examine your claim about ${topicLower}. You said one thing but your evidence says another. Which is it? You can't have it both ways, and the contradiction is fatal.`,
+      `Your argument about ${topicLower} has three pillars, and I'm going to knock each one down. Your premise is incomplete, your logic has gaps, and your conclusion doesn't follow.`,
+      `I'm going to press you on ${topicLower}. You made an assertion without evidence. You've presented opinion as fact, and the burden of proof is on you.`,
     ],
     "the-diplomat": [
-      [
-        `I see the merit in what you're saying about "${keyPhrase}", and I want to acknowledge that. But I think there's a more balanced view we're both missing.`,
-        `You've raised valid concerns. Rather than dismiss them, let me suggest a framing that actually addresses both sides of this.`,
-        `The truth usually lies in the middle. Your argument captures part of the picture, but misses the other half entirely.`,
-      ],
-      [
-        `There's common ground here that we're both overlooking. Your point about "${keyPhrase}" has merit, but so does the counter-position.`,
-        `I appreciate your perspective. Let me try to bridge the gap between where you are and where I think the evidence points.`,
-        `This isn't a zero-sum debate. Your argument and mine can both contain truth. Let me show you where they intersect.`,
-      ],
-      [
-        `You've made a compelling case for your side. Let me make an equally compelling case for the other, and let the audience decide.`,
-        `I respect your position on "${keyPhrase}". Now let me offer a perspective that might shift how you see this.`,
-        `Both sides have a point. The question isn't who's right — it's which framing serves us better.`,
-      ],
+      `I see merit in your position on ${topicLower}, but there's a more balanced view. Your argument captures part of the truth, but it's not the whole truth. When you include both sides, a more nuanced picture emerges.`,
+      `You've raised valid concerns about ${topicLower}. Let me suggest a framing that addresses both sides. The problem with your position isn't that it's wrong — it's that it's incomplete.`,
+      `Both sides have a point about ${topicLower}. The truth usually lies in the middle. Your argument captures something real, but it misses important perspectives.`,
     ],
   };
 
   const pool = responses[persona.id] || responses["the-rookie"];
-  const roundIdx = (round - 1) % pool.length;
-  const options = pool[roundIdx];
-  const textIdx = Math.floor(Math.random() * options.length);
-  return { content: options[textIdx] };
+  const idx = (round - 1) % pool.length;
+  return { content: pool[idx] };
 }

@@ -5,7 +5,6 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { LoaderCircle } from "lucide-react";
 import { AppShell } from "@/components/web/AppShell";
-import { ScoreCard } from "@/components/web/ScoreCard";
 import { getPersonaById } from "@/lib/personas";
 
 interface DebateData {
@@ -17,28 +16,21 @@ interface DebateData {
     persona_id: string | null;
     opponent_type: string;
     created_by: string;
+    winner_id: string | null;
+    status: string;
   };
   arguments: Array<{
     id: string;
     debate_id: string;
     user_id: string;
     content: string;
-    audio_url: string | null;
-    audio_duration: number | null;
-    transcription: string | null;
     round: number;
     side: string;
   }>;
   results: {
     id: string;
     winner_id: string;
-    scores: Record<string, {
-      logic: number;
-      clarity: number;
-      relevance: number;
-      persuasion: number;
-      total: number;
-    }>;
+    scores: Record<string, any>;
     created_at: string;
   } | null;
 }
@@ -67,7 +59,7 @@ export default function Results() {
     return (
       <AppShell>
         <div style={{ textAlign: "center", padding: 60, color: "var(--muted)" }}>
-          <LoaderCircle className="spin" size={24} />
+          <div className="spin" style={{ width: 24, height: 24, border: "2px solid var(--line)", borderTopColor: "var(--red-light)", borderRadius: "50%", margin: "0 auto 12px" }} />
           <p style={{ marginTop: 12 }}>Loading results...</p>
         </div>
       </AppShell>
@@ -77,13 +69,13 @@ export default function Results() {
   if (!data) {
     return (
       <AppShell>
-        <div className="verdict">
-          <div className="eyebrow">AI verdict is in</div>
-          <div className="winner">NO RESULT YET.</div>
-          <p style={{ color: "var(--muted)", fontSize: 18, lineHeight: 1.6 }}>
-            Complete a debate to see your AI-judged score here.
+        <div style={{ textAlign: "center", padding: 60 }}>
+          <div className="eyebrow">No result</div>
+          <h1 className="page-title" style={{ fontSize: 36, marginTop: 8 }}>NO RESULT YET</h1>
+          <p style={{ color: "var(--muted)", fontSize: 16 }}>
+            Complete a debate to see results here.
           </p>
-          <div className="hero-actions" style={{ justifyContent: "center", marginTop: 32 }}>
+          <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 24 }}>
             <Link className="button" href="/debate/new">Start a debate</Link>
             <Link className="button secondary" href="/dashboard">Back to dashboard</Link>
           </div>
@@ -94,25 +86,25 @@ export default function Results() {
 
   const { debate, arguments: args, results } = data;
   const persona = debate.persona_id ? getPersonaById(debate.persona_id) : null;
-
-  // Build player info
-  const userArgs = args.filter((a) => a.user_id === debate.created_by);
-  const aiArgs = args.filter((a) => a.user_id.startsWith("ai-"));
-
-  // Get round scores from results
-  const scores = results?.scores || {};
-
-  // Determine winner
-  const isUserWinner = results?.winner_id === debate.created_by;
-
   const playerName = "You";
   const opponentName = persona?.name || "Opponent";
 
-  // Build scorecard data
-  const userScore = scores[debate.created_by] || { logic: 0, clarity: 0, relevance: 0, persuasion: 0, total: 0 };
-  const aiScore = scores[`ai-${persona?.id || ""}`] || { logic: 0, clarity: 0, relevance: 0, persuasion: 0, total: 0 };
+  // Determine winner — check debate_results first, then debates table, then calculate
+  let winnerId = results?.winner_id || debate.winner_id;
+  if (!winnerId && debate.status === "completed") {
+    const userArgs = args.filter((a) => a.user_id === debate.created_by);
+    const aiArgs = args.filter((a) => a.user_id.startsWith("ai-"));
+    winnerId = userArgs.length >= aiArgs.length ? debate.created_by : (aiArgs[0]?.user_id || null);
+  }
 
-  // If no real scores yet (debate not completed), show round arguments
+  const isUserWinner = winnerId === debate.created_by;
+  const scores = results?.scores || {};
+
+  const userScore = scores[debate.created_by] || null;
+  const aiScoreKey = Object.keys(scores).find((k) => k.startsWith("ai-")) || "";
+  const aiScore = scores[aiScoreKey] || null;
+
+  // Get arguments per round
   const latestRound = Math.max(...args.map((a) => a.round), 0);
 
   return (
@@ -129,89 +121,109 @@ export default function Results() {
           </p>
         </div>
 
-        {/* Show scorecard if results exist */}
-        {results && userScore.total > 0 ? (
-          <ScoreCard
-            winner={{
-              name: isUserWinner ? playerName : opponentName,
-              avatar: isUserWinner ? "Y" : persona?.avatar || "?",
-              color: isUserWinner ? "var(--red-light)" : persona?.color || "var(--muted)",
-              ...userScore,
-              total: isUserWinner ? userScore.total : aiScore.total,
-              isWinner: true,
-            }}
-            loser={{
-              name: isUserWinner ? opponentName : playerName,
-              avatar: isUserWinner ? persona?.avatar || "?" : "Y",
-              color: isUserWinner ? persona?.color || "var(--muted)" : "var(--red-light)",
-              ...userScore,
-              total: isUserWinner ? aiScore.total : userScore.total,
-              isWinner: false,
-            }}
-            feedback={results.scores?.["feedback"] as any || ""}
-            highlights={(results.scores?.["highlights"] as any) || []}
-            bestQuote={(results.scores?.["bestQuote"] as any) || ""}
-          />
-        ) : (
-          /* Show round-by-round arguments */
-          <div style={{ display: "grid", gap: 20 }}>
-            {Array.from({ length: latestRound }, (_, i) => i + 1).map((r) => {
-              const userArg = args.find((a) => a.round === r && a.user_id === debate.created_by);
-              const aiArg = args.find((a) => a.round === r && a.user_id.startsWith("ai-"));
+        {/* Winner banner */}
+        <div style={{
+          textAlign: "center", padding: "32px 20px",
+          background: isUserWinner
+            ? "linear-gradient(135deg, rgba(255,200,87,0.12), rgba(255,200,87,0.04))"
+            : "linear-gradient(135deg, rgba(71,104,170,0.12), rgba(71,104,170,0.04))",
+          borderRadius: 20, marginBottom: 24,
+          border: `1px solid ${isUserWinner ? "rgba(255,200,87,0.25)" : "rgba(71,104,170,0.25)"}`,
+        }}>
+          <div style={{
+            font: "800 clamp(42px, 8vw, 72px) var(--font-display)",
+            letterSpacing: "-.06em",
+            color: isUserWinner ? "var(--gold)" : "var(--muted)",
+            marginBottom: 8,
+          }}>
+            {isUserWinner ? "VICTORY" : "DEFEAT"}
+          </div>
+          {persona && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginTop: 8 }}>
+              <div style={{
+                width: 36, height: 36, borderRadius: "50%",
+                background: isUserWinner ? "rgba(255,200,87,0.2)" : `${persona.color}22`,
+                color: isUserWinner ? "var(--gold)" : persona.color,
+                display: "grid", placeItems: "center",
+                fontWeight: 900, fontSize: 14,
+              }}>
+                {isUserWinner ? "Y" : persona.avatar}
+              </div>
+              <div style={{ textAlign: "left" }}>
+                <div style={{ fontWeight: 800, fontSize: 14 }}>
+                  {isUserWinner ? "You beat" : `${opponentName} beat`} {opponentName}
+                </div>
+                <div style={{ fontSize: 12, color: "var(--muted)" }}>
+                  {isUserWinner ? "Well argued." : "Better luck next time."}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
 
-              return (
-                <div key={r} className="card" style={{ padding: 24 }}>
-                  <div className="eyebrow" style={{ marginBottom: 12 }}>ROUND {r}</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-                    {/* User argument */}
-                    <div style={{ padding: "14px 16px", background: "#0c0d10", borderRadius: 12 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                        <div className="avatar" style={{ width: 28, height: 28, borderRadius: 8, fontSize: 12 }}>Y</div>
-                        <strong style={{ fontSize: 13 }}>You ({userArg?.side || "for"})</strong>
-                      </div>
-                      {userArg?.audio_url ? (
-                        <div>
-                          <audio controls src={userArg.audio_url} style={{ width: "100%", height: 36 }} />
-                          {userArg.transcription && (
-                            <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 8, lineHeight: 1.5 }}>
-                              {userArg.transcription}
-                            </p>
-                          )}
+        {/* Round-by-round arguments */}
+        <div style={{ display: "grid", gap: 16 }}>
+          {Array.from({ length: latestRound }, (_, i) => i + 1).map((r) => {
+            const userArg = args.find((a) => a.round === r && a.user_id === debate.created_by);
+            const aiArg = args.find((a) => a.round === r && a.user_id.startsWith("ai-"));
+
+            return (
+              <div key={r} className="card" style={{ padding: 20 }}>
+                <div className="eyebrow" style={{ marginBottom: 12 }}>ROUND {r}</div>
+                <div style={{ display: "grid", gap: 16 }}>
+                  {/* User argument */}
+                  <div style={{ padding: "14px 16px", background: "#0c0d10", borderRadius: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                      <div style={{
+                        width: 26, height: 26, borderRadius: 8,
+                        background: "var(--red-light)", color: "white",
+                        display: "grid", placeItems: "center",
+                        fontWeight: 900, fontSize: 11,
+                      }}>Y</div>
+                      <strong style={{ fontSize: 13 }}>You ({userArg?.side || "for"})</strong>
+                    </div>
+                    <p style={{ color: "#d7d9dd", lineHeight: 1.6, margin: 0, fontSize: 14 }}>
+                      {userArg?.content || "No argument submitted."}
+                    </p>
+                  </div>
+
+                  {/* AI argument */}
+                  <div style={{ padding: "14px 16px", background: "#0c0d10", borderRadius: 12 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                      {persona ? (
+                        <div style={{
+                          width: 26, height: 26, borderRadius: 8,
+                          background: `${persona.color}22`, color: persona.color,
+                          display: "grid", placeItems: "center",
+                          fontWeight: 900, fontSize: 11,
+                        }}>
+                          {persona.avatar}
                         </div>
                       ) : (
-                        <p style={{ color: "#d7d9dd", lineHeight: 1.6, margin: 0, fontSize: 14 }}>
-                          {userArg?.content || "No argument submitted."}
-                        </p>
+                        <div style={{
+                          width: 26, height: 26, borderRadius: 8,
+                          background: "#4768aa22", color: "#4768aa",
+                          display: "grid", placeItems: "center",
+                          fontWeight: 900, fontSize: 11,
+                        }}>?</div>
                       )}
+                      <strong style={{ fontSize: 13 }}>{opponentName} ({aiArg?.side || "against"})</strong>
                     </div>
-
-                    {/* AI argument */}
-                    <div style={{ padding: "14px 16px", background: "#0c0d10", borderRadius: 12 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                        {persona ? (
-                          <div
-                            style={{
-                              width: 28, height: 28, borderRadius: 8,
-                              background: `${persona.color}22`, color: persona.color,
-                              display: "grid", placeItems: "center",
-                              fontWeight: 900, fontSize: 12,
-                            }}
-                          >
-                            {persona.avatar}
-                          </div>
-                        ) : (
-                          <div className="avatar" style={{ width: 28, height: 28, borderRadius: 8, fontSize: 12, background: "linear-gradient(135deg,#4768aa,#132142)" }}>?</div>
-                        )}
-                        <strong style={{ fontSize: 13 }}>{opponentName} ({aiArg?.side || "against"})</strong>
-                      </div>
-                      <p style={{ color: "#d7d9dd", lineHeight: 1.6, margin: 0, fontSize: 14 }}>
-                        {aiArg?.content || "Awaiting response..."}
-                      </p>
-                    </div>
+                    <p style={{ color: "#d7d9dd", lineHeight: 1.6, margin: 0, fontSize: 14 }}>
+                      {aiArg?.content || "Awaiting response..."}
+                    </p>
                   </div>
                 </div>
-              );
-            })}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Feedback */}
+        {scores.feedback && (
+          <div className="card" style={{ marginTop: 16, padding: 20 }}>
+            <div className="eyebrow" style={{ marginBottom: 8 }}>AI Feedback</div>
+            <p style={{ color: "#d7d9dd", lineHeight: 1.6, margin: 0 }}>{scores.feedback}</p>
           </div>
         )}
 

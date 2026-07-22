@@ -1,0 +1,1 @@
+ALTER TABLE debates ADD COLUMN IF NOT EXISTS winner_id TEXT;
