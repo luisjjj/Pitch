@@ -260,7 +260,8 @@ export default function NewDebate() {
     if (type === "ai") {
       setStep("persona");
     } else {
-      setStep("configure");
+      // Redirect to matchmaking for human opponents
+      router.push("/debate/matchmaking");
     }
   }
 
@@ -340,14 +341,14 @@ export default function NewDebate() {
             <button
               className="card choice"
               onClick={() => handleOpponentPick("human")}
-              style={{ textAlign: "left", cursor: "pointer", minHeight: 180, opacity: 0.5, pointerEvents: "none" }}
+              style={{ textAlign: "left", cursor: "pointer", minHeight: 180 }}
             >
               <div style={{ fontSize: 36, marginBottom: 12 }}>👤</div>
               <strong style={{ fontSize: 20 }}>HUMAN OPPONENT</strong>
               <p style={{ color: "var(--muted)", marginTop: 6, lineHeight: 1.5 }}>
-                Get matched with another real player. Coming soon.
+                Get matched with another real player or challenge a friend.
               </p>
-              <span style={{ color: "var(--muted)", fontWeight: 900, fontSize: 12 }}>COMING SOON</span>
+              <span style={{ color: "var(--gold)", fontWeight: 900, fontSize: 12 }}>LIVE NOW</span>
             </button>
           </div>
           <button className="pill" style={{ marginTop: 20 }} onClick={() => setStep("category")}>

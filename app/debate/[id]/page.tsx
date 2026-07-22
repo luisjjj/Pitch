@@ -391,7 +391,7 @@ export default function DebateRoom() {
     if (isRecording) {
       // Stop recording
       if (speechRecognitionRef.current) {
-        speechRecognitionRef.current.stop();
+        try { speechRecognitionRef.current.stop(); } catch {}
         speechRecognitionRef.current = null;
       }
       if (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive") {
@@ -405,7 +405,7 @@ export default function DebateRoom() {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
       // Start MediaRecorder for audio blob
-      const mediaRecorder = new MediaRecorder(stream);
+      const mediaRecorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
       mediaRecorderRef.current = mediaRecorder;
       audioChunksRef.current = [];
 
@@ -421,52 +421,62 @@ export default function DebateRoom() {
       };
 
       mediaRecorder.start();
+      setIsRecording(true);
 
       // Start Web Speech API for live transcription
       const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      if (SpeechRecognition) {
-        const recognition = new SpeechRecognition();
-        recognition.continuous = true;
-        recognition.interimResults = true;
-        recognition.lang = "en-US";
-
-        let finalTranscript = input;
-
-        recognition.onresult = (event: any) => {
-          let interim = "";
-          for (let i = event.resultIndex; i < event.results.length; i++) {
-            if (event.results[i].isFinal) {
-              finalTranscript += event.results[i][0].transcript + " ";
-            } else {
-              interim += event.results[i][0].transcript;
-            }
-          }
-          setInput((finalTranscript + interim).trim());
-        };
-
-        recognition.onerror = (event: any) => {
-          console.error("Speech recognition error:", event.error);
-          if (event.error !== "no-speech") {
-            setIsRecording(false);
-          }
-        };
-
-        recognition.onend = () => {
-          // Restart if still recording
-          if (mediaRecorderRef.current?.state === "recording") {
-            try { recognition.start(); } catch {}
-          }
-        };
-
-        recognition.start();
-        speechRecognitionRef.current = recognition;
-        setIsRecording(true);
-      } else {
-        // Fallback: just record audio without transcription
-        setIsRecording(true);
+      if (!SpeechRecognition) {
+        console.warn("Speech Recognition not supported in this browser");
+        return;
       }
+
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = true;
+      recognition.lang = "en-US";
+      recognition.maxAlternatives = 1;
+
+      let finalTranscript = inputRef.current?.value || input || "";
+
+      recognition.onresult = (event: any) => {
+        let interim = "";
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const transcript = event.results[i][0].transcript;
+          if (event.results[i].isFinal) {
+            finalTranscript += transcript + " ";
+          } else {
+            interim += transcript;
+          }
+        }
+        const combined = (finalTranscript + interim).trim();
+        setInput(combined);
+      };
+
+      recognition.onerror = (event: any) => {
+        console.error("Speech recognition error:", event.error);
+        // Only stop on fatal errors, not no-speech or aborted
+        if (["not-allowed", "service-not-allowed"].includes(event.error)) {
+          setIsRecording(false);
+          if (mediaRecorderRef.current?.state === "recording") {
+            mediaRecorderRef.current.stop();
+          }
+        }
+      };
+
+      recognition.onend = () => {
+        // Auto-restart if still recording (browsers stop after ~60s)
+        if (isRecording || mediaRecorderRef.current?.state === "recording") {
+          setTimeout(() => {
+            try { recognition.start(); } catch {}
+          }, 100);
+        }
+      };
+
+      recognition.start();
+      speechRecognitionRef.current = recognition;
     } catch (err) {
       console.error("Microphone access denied:", err);
+      setIsRecording(false);
     }
   }, [isRecording, input]);
 
